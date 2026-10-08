@@ -52,6 +52,18 @@ pip install -r requirements.txt
 ```
 *(As dependências são apenas `textual` e `rich`)*
 
+### 3. Empacotar como Aplicativo macOS (FindFile.app)
+Você pode empacotar o FindFile como um aplicativo nativo (`FindFile.app`) diretamente na sua pasta de **Aplicativos** (`/Applications`), com ícone de alta resolução e comando global de terminal:
+
+```bash
+chmod +x build_app.sh
+./build_app.sh
+```
+
+Isso irá:
+- Instalar `/Applications/FindFile.app` (visível no Finder, Launchpad, Spotlight `Cmd + Espaço` e Dock).
+- Criar o comando global `findfile` no seu terminal (`~/.local/bin/findfile`), permitindo rodar `findfile` diretamente de qualquer pasta.
+
 ---
 
 ## 🎮 Como Usar
