@@ -88,9 +88,9 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundleIdentifier</key>
     <string>com.cassio.findfile</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -133,30 +133,39 @@ fi
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_PY="$APP_DIR/findfile.py"
 
-PYTHON_CANDIDATES=(
-    "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
-    "$(command -v python3 2>/dev/null)"
-    "/opt/homebrew/bin/python3"
-    "/usr/local/bin/python3"
-    "/usr/bin/python3"
-)
+find_python() {
+    local candidates=()
+    # Prioriza Python.framework (mais recente primeiro), Homebrew e ambiente ativo
+    while IFS= read -r p; do
+        candidates+=("$p")
+    done < <(ls -1r /Library/Frameworks/Python.framework/Versions/*/bin/python3 2>/dev/null || true)
 
-PY_EXEC=""
-for p in "${PYTHON_CANDIDATES[@]}"; do
-    if [ -n "$p" ] && [ -x "$p" ]; then
-        if "$p" -c "import textual, rich" >/dev/null 2>&1; then
-            PY_EXEC="$p"
-            break
+    candidates+=(
+        "$(command -v python3 2>/dev/null || true)"
+        "/opt/homebrew/bin/python3"
+        "/usr/local/bin/python3"
+        "/usr/bin/python3"
+    )
+
+    for p in "${candidates[@]}"; do
+        if [ -n "$p" ] && [ -x "$p" ]; then
+            if "$p" -c "import textual, rich" >/dev/null 2>&1; then
+                echo "$p"
+                return 0
+            fi
         fi
-    fi
-done
+    done
+    return 1
+}
+
+PY_EXEC="$(find_python || true)"
 
 if [ -z "$PY_EXEC" ]; then
     echo "⚠️ Python com as dependências 'textual' e 'rich' não foi encontrado."
     echo "Instalando dependências..."
     if command -v pip3 >/dev/null 2>&1; then
         pip3 install -r "$APP_DIR/requirements.txt"
-        PY_EXEC="$(command -v python3)"
+        PY_EXEC="$(find_python || command -v python3)"
     else
         echo "Por favor instale o Python 3 e execute: pip3 install textual rich"
         read -r -p "Pressione Enter para fechar..."
@@ -207,23 +216,17 @@ if [[ ! -f "\$APP_PY" ]]; then
     APP_PY="$SCRIPT_DIR/findfile.py"
 fi
 
-PYTHON_CANDIDATES=(
-    "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
-    "\$(command -v python3 2>/dev/null)"
-    "/opt/homebrew/bin/python3"
-    "/usr/local/bin/python3"
-    "/usr/bin/python3"
-)
-
 PY_EXEC=""
-for p in "\${PYTHON_CANDIDATES[@]}"; do
-    if [[ -n "\$p" && -x "\$p" ]]; then
-        if "\$p" -c "import textual, rich" >/dev/null 2>&1; then
-            PY_EXEC="\$p"
-            break
-        fi
+while IFS= read -r p; do
+    if [[ -n "\$p" && -x "\$p" ]] && "\$p" -c "import textual, rich" >/dev/null 2>&1; then
+        PY_EXEC="\$p"
+        break
     fi
-done
+done < <(
+    ls -1r /Library/Frameworks/Python.framework/Versions/*/bin/python3 2>/dev/null || true
+    command -v python3 2>/dev/null || true
+    printf "%s\n" "/opt/homebrew/bin/python3" "/usr/local/bin/python3" "/usr/bin/python3"
+)
 
 if [[ -z "\$PY_EXEC" ]]; then
     PY_EXEC="python3"

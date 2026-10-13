@@ -19,8 +19,9 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Set, Tuple
+from typing import Callable, Iterable, List, Optional, Pattern, Set, Tuple
 
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -28,7 +29,6 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
-from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -93,6 +93,8 @@ BINARY_EXTENSIONS = {
 
 MAX_CONTENT_FILE_SIZE = 30 * 1024 * 1024  # 30 MB
 MAX_MATCHES_PER_FILE = 40
+MAX_TOTAL_RESULTS = 5000
+BINARY_SNIFF_BYTES = 4096
 
 
 # -----------------------------------------------------------------------------
@@ -144,7 +146,7 @@ def is_binary_file(filepath: str) -> bool:
         return True
     try:
         with open(filepath, "rb") as f:
-            chunk = f.read(2048)
+            chunk = f.read(BINARY_SNIFF_BYTES)
             if b"\x00" in chunk:
                 return True
     except Exception:
@@ -153,7 +155,7 @@ def is_binary_file(filepath: str) -> bool:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Copia texto para a área de transferência do sistema (macOS pbcopy ou xclip)."""
+    """Copia texto para a área de transferência do sistema (macOS pbcopy, wl-copy ou xclip)."""
     if sys.platform == "darwin":
         try:
             subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
@@ -161,7 +163,11 @@ def copy_to_clipboard(text: str) -> bool:
         except Exception:
             pass
     elif sys.platform.startswith("linux"):
-        for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+        for cmd in (
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ):
             if shutil.which(cmd[0]):
                 try:
                     subprocess.run(cmd, input=text.encode("utf-8"), check=True)
@@ -175,10 +181,18 @@ def open_file_in_system(filepath: str) -> bool:
     """Abre o arquivo no aplicativo padrão do sistema."""
     try:
         if sys.platform == "darwin":
-            subprocess.Popen(["open", filepath])
+            subprocess.Popen(
+                ["open", filepath],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             return True
         elif sys.platform.startswith("linux"):
-            subprocess.Popen(["xdg-open", filepath])
+            subprocess.Popen(
+                ["xdg-open", filepath],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             return True
     except Exception:
         pass
@@ -189,30 +203,45 @@ def reveal_in_file_manager(filepath: str) -> bool:
     """Revela o arquivo no Finder (macOS) ou gerenciador de arquivos."""
     try:
         if sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", filepath])
+            subprocess.Popen(
+                ["open", "-R", filepath],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             return True
         elif sys.platform.startswith("linux"):
             folder = os.path.dirname(filepath)
-            subprocess.Popen(["xdg-open", folder])
+            subprocess.Popen(
+                ["xdg-open", folder],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             return True
     except Exception:
         pass
     return False
 
 
-def highlight_match(text: str, query: str, case_sensitive: bool = False) -> Text:
-    """Cria objeto Rich Text com a string de busca destacada visualmente."""
+def highlight_match(
+    text: str,
+    query: str,
+    case_sensitive: bool = False,
+    use_regex: bool = False,
+) -> Text:
+    """Cria objeto Rich Text com a string ou expressão regular destacada visualmente."""
     rich_text = Text()
     if not query:
         rich_text.append(text)
         return rich_text
 
     try:
-        pattern = re.escape(query)
+        pattern = query if use_regex else re.escape(query)
         flags = 0 if case_sensitive else re.IGNORECASE
         last_idx = 0
         for match in re.finditer(pattern, text, flags=flags):
             start, end = match.span()
+            if start == end:
+                continue
             if start > last_idx:
                 rich_text.append(text[last_idx:start])
             rich_text.append(text[start:end], style="bold black on #f1c40f")
@@ -241,8 +270,10 @@ class SearchEngine:
         search_content: bool = False,
         case_sensitive: bool = False,
         ignore_caches: bool = True,
+        use_regex: bool = False,
         ext_filter: Optional[Set[str]] = None,
         max_workers: Optional[int] = None,
+        max_results: int = MAX_TOTAL_RESULTS,
         on_batch: Optional[Callable[[List[SearchResult]], None]] = None,
         on_progress: Optional[Callable[[int, int, float, bool], None]] = None,
     ):
@@ -252,7 +283,9 @@ class SearchEngine:
         self.search_content = search_content
         self.case_sensitive = case_sensitive
         self.ignore_caches = ignore_caches
+        self.use_regex = use_regex
         self.ext_filter = ext_filter
+        self.max_results = max_results
 
         cpu_count = os.cpu_count() or 4
         self.max_workers = max_workers or min(32, cpu_count * 4)
@@ -261,10 +294,16 @@ class SearchEngine:
         self.on_progress = on_progress
 
         self.stop_event = threading.Event()
+        self.limit_reached = False
         self._files_scanned = 0
         self._results_found = 0
         self._counter_lock = threading.Lock()
         self._next_result_id = 0
+
+        self._regex_pattern: Optional[Pattern[str]] = None
+        if self.use_regex and self.query:
+            flags = 0 if self.case_sensitive else re.IGNORECASE
+            self._regex_pattern = re.compile(self.query, flags=flags)
 
     def stop(self) -> None:
         """Sinaliza para todas as threads abortarem imediatamente."""
@@ -277,10 +316,7 @@ class SearchEngine:
         """Executa a busca multithread e retorna (arquivos_escaneados, resultados, tempo_gasto)."""
         start_time = time.perf_counter()
 
-        if not os.path.isdir(self.root_dir):
-            return 0, 0, 0.0
-
-        if not self.query:
+        if not os.path.isdir(self.root_dir) or not self.query:
             return 0, 0, 0.0
 
         # Filas com limites para manter consumo de memória estritamente controlado
@@ -288,7 +324,7 @@ class SearchEngine:
         result_queue: queue.Queue[Optional[SearchResult]] = queue.Queue(maxsize=2000)
 
         query_bytes = self.query.encode("utf-8")
-        if not self.case_sensitive:
+        if not self.case_sensitive and self.query.isascii():
             query_bytes = query_bytes.lower()
 
         query_str = self.query if self.case_sensitive else self.query.lower()
@@ -299,6 +335,7 @@ class SearchEngine:
         def result_dispatcher():
             batch: List[SearchResult] = []
             last_flush = time.perf_counter()
+            last_progress = last_flush
 
             while not dispatcher_stop.is_set() or not result_queue.empty():
                 try:
@@ -311,20 +348,21 @@ class SearchEngine:
 
                 now = time.perf_counter()
                 if batch and (len(batch) >= 30 or (now - last_flush) >= 0.06):
-                    if self.on_batch and not self.stop_event.is_set():
+                    if self.on_batch and (not self.stop_event.is_set() or self.limit_reached):
                         self.on_batch(batch)
                     batch = []
                     last_flush = now
 
-                # Atualiza progresso periodicamente
-                if self.on_progress and (now - last_flush) >= 0.05:
+                # Atualiza progresso periodicamente com timer independente
+                if self.on_progress and (now - last_progress) >= 0.06:
                     with self._counter_lock:
                         scanned = self._files_scanned
                         found = self._results_found
                     self.on_progress(scanned, found, now - start_time, True)
+                    last_progress = now
 
             # Esvazia lote residual final
-            if batch and self.on_batch and not self.stop_event.is_set():
+            if batch and self.on_batch and (not self.stop_event.is_set() or self.limit_reached):
                 self.on_batch(batch)
 
         dispatcher_thread = threading.Thread(target=result_dispatcher, daemon=True)
@@ -343,7 +381,7 @@ class SearchEngine:
                     break
 
                 try:
-                    self._check_file_content(file_path, query_bytes, result_queue)
+                    self._check_file_content(file_path, query_bytes, query_str, result_queue)
                 except Exception:
                     pass
                 finally:
@@ -388,6 +426,20 @@ class SearchEngine:
 
         return self._files_scanned, self._results_found, elapsed
 
+    def _register_result(self) -> Optional[int]:
+        """Incrementa contador de resultados com verificação de limite máximo."""
+        with self._counter_lock:
+            if self._results_found >= self.max_results:
+                self.limit_reached = True
+                self.stop_event.set()
+                return None
+            self._next_result_id += 1
+            self._results_found += 1
+            if self._results_found >= self.max_results:
+                self.limit_reached = True
+                self.stop_event.set()
+            return self._next_result_id
+
     def _crawl_filesystem(
         self,
         file_queue: queue.Queue[Optional[str]],
@@ -396,18 +448,19 @@ class SearchEngine:
     ) -> None:
         """Percorre a árvore de diretórios via os.scandir com velocidade máxima."""
         stack = [self.root_dir]
-        visited_inodes: Set[int] = set()
+        visited_dirs: Set[Tuple[int, int]] = set()
 
-        has_wildcard = "*" in self.query or "?" in self.query
+        has_wildcard = (not self.use_regex) and ("*" in self.query or "?" in self.query)
 
         while stack and not self.stop_event.is_set():
             current_dir = stack.pop()
 
             try:
                 stat_res = os.stat(current_dir)
-                if stat_res.st_ino in visited_inodes:
+                dir_key = (stat_res.st_dev, stat_res.st_ino)
+                if dir_key in visited_dirs:
                     continue
-                visited_inodes.add(stat_res.st_ino)
+                visited_dirs.add(dir_key)
             except OSError:
                 continue
 
@@ -441,27 +494,32 @@ class SearchEngine:
                                 continue
 
                         # 1. Checagem de busca por NOME
-                        name_matched = False
                         if self.search_name:
-                            name_to_check = name if self.case_sensitive else name.lower()
-                            if has_wildcard:
-                                fn = fnmatch.fnmatchcase if self.case_sensitive else fnmatch.fnmatch
-                                name_matched = fn(name_to_check, query_str)
+                            if self.use_regex and self._regex_pattern is not None:
+                                name_matched = bool(self._regex_pattern.search(name))
                             else:
-                                name_matched = query_str in name_to_check
+                                name_to_check = name if self.case_sensitive else name.lower()
+                                if has_wildcard:
+                                    fn = (
+                                        fnmatch.fnmatchcase
+                                        if self.case_sensitive
+                                        else fnmatch.fnmatch
+                                    )
+                                    name_matched = fn(name_to_check, query_str)
+                                else:
+                                    name_matched = query_str in name_to_check
 
                             if name_matched:
                                 try:
-                                    st = entry.stat()
+                                    st = entry.stat(follow_symlinks=False)
                                     size = st.st_size
                                     mtime = st.st_mtime
                                 except OSError:
                                     size, mtime = 0, 0.0
 
-                                with self._counter_lock:
-                                    self._next_result_id += 1
-                                    res_id = self._next_result_id
-                                    self._results_found += 1
+                                res_id = self._register_result()
+                                if res_id is None:
+                                    return
 
                                 rel = os.path.relpath(entry.path, self.root_dir)
                                 res = SearchResult(
@@ -476,7 +534,7 @@ class SearchEngine:
                                 self._put_result(result_queue, res)
 
                         # 2. Enfileiramento para busca por CONTEÚDO
-                        if self.search_content:
+                        if self.search_content and not self.stop_event.is_set():
                             # Ignora binários conhecidos antes de enfileirar
                             ext = os.path.splitext(name)[1].lower()
                             if ext not in BINARY_EXTENSIONS:
@@ -493,69 +551,117 @@ class SearchEngine:
         self,
         file_path: str,
         query_bytes: bytes,
+        query_str: str,
         result_queue: queue.Queue[Optional[SearchResult]],
     ) -> None:
-        """Lê arquivo em binário e realiza busca superveloz por bytes antes de decodificar."""
+        """Abre o arquivo uma única vez, valida se não é binário e busca por conteúdo."""
         try:
-            size = os.path.getsize(file_path)
-            if size > MAX_CONTENT_FILE_SIZE:
-                return
-
-            # Checagem preliminar se é binário
-            if is_binary_file(file_path):
-                return
-
             with open(file_path, "rb") as f:
-                data = f.read()
-
-            data_to_search = data if self.case_sensitive else data.lower()
-            if query_bytes not in data_to_search:
-                return
-
-            # Termo encontrado no arquivo! Localiza números de linha e trechos
-            mtime = os.path.getmtime(file_path)
-            fname = os.path.basename(file_path)
-            rel = os.path.relpath(file_path, self.root_dir)
-
-            lines = data.splitlines()
-            matches_in_file = 0
-
-            for line_idx, raw_line in enumerate(lines, start=1):
-                if self.stop_event.is_set():
+                st = os.fstat(f.fileno())
+                size = st.st_size
+                if size == 0 or size > MAX_CONTENT_FILE_SIZE:
                     return
 
-                line_check = raw_line if self.case_sensitive else raw_line.lower()
-                if query_bytes in line_check:
-                    try:
+                head = f.read(BINARY_SNIFF_BYTES)
+                if b"\x00" in head:
+                    return
+
+                rest = f.read()
+                data = head if not rest else head + rest
+                mtime = st.st_mtime
+
+            # Caminho rápido em bytes para buscas literais ASCII ou case-sensitive
+            use_fast_bytes = (not self.use_regex) and (
+                self.case_sensitive or self.query.isascii()
+            )
+
+            if use_fast_bytes:
+                data_to_search = data if self.case_sensitive else data.lower()
+                if query_bytes not in data_to_search:
+                    return
+
+                fname = os.path.basename(file_path)
+                rel = os.path.relpath(file_path, self.root_dir)
+                matches_in_file = 0
+
+                for line_idx, raw_line in enumerate(data.splitlines(), start=1):
+                    if self.stop_event.is_set():
+                        return
+
+                    line_check = raw_line if self.case_sensitive else raw_line.lower()
+                    if query_bytes in line_check:
                         text_line = raw_line.decode("utf-8", errors="replace").strip()
-                    except Exception:
-                        text_line = str(raw_line).strip()
+                        if len(text_line) > 200:
+                            text_line = text_line[:197] + "..."
 
-                    # Limita comprimento do trecho para visualização limpa
-                    if len(text_line) > 200:
-                        text_line = text_line[:197] + "..."
+                        res_id = self._register_result()
+                        if res_id is None:
+                            return
 
-                    with self._counter_lock:
-                        self._next_result_id += 1
-                        res_id = self._next_result_id
-                        self._results_found += 1
+                        res = SearchResult(
+                            idx=res_id,
+                            match_type="content",
+                            file_path=file_path,
+                            file_name=fname,
+                            rel_path=rel,
+                            line_number=line_idx,
+                            snippet=text_line,
+                            file_size=size,
+                            mtime=mtime,
+                        )
+                        self._put_result(result_queue, res)
 
-                    res = SearchResult(
-                        idx=res_id,
-                        match_type="content",
-                        file_path=file_path,
-                        file_name=fname,
-                        rel_path=rel,
-                        line_number=line_idx,
-                        snippet=text_line,
-                        file_size=size,
-                        mtime=mtime,
-                    )
-                    self._put_result(result_queue, res)
+                        matches_in_file += 1
+                        if matches_in_file >= MAX_MATCHES_PER_FILE:
+                            break
+            else:
+                # Caminho Unicode completo (para Regex ou termos acentuados case-insensitive)
+                text_data = data.decode("utf-8", errors="replace")
+                if self.use_regex and self._regex_pattern is not None:
+                    if not self._regex_pattern.search(text_data):
+                        return
+                else:
+                    if query_str not in text_data.lower():
+                        return
 
-                    matches_in_file += 1
-                    if matches_in_file >= MAX_MATCHES_PER_FILE:
-                        break
+                fname = os.path.basename(file_path)
+                rel = os.path.relpath(file_path, self.root_dir)
+                matches_in_file = 0
+
+                for line_idx, line in enumerate(text_data.splitlines(), start=1):
+                    if self.stop_event.is_set():
+                        return
+
+                    if self.use_regex and self._regex_pattern is not None:
+                        matched = bool(self._regex_pattern.search(line))
+                    else:
+                        matched = query_str in line.lower()
+
+                    if matched:
+                        text_line = line.strip()
+                        if len(text_line) > 200:
+                            text_line = text_line[:197] + "..."
+
+                        res_id = self._register_result()
+                        if res_id is None:
+                            return
+
+                        res = SearchResult(
+                            idx=res_id,
+                            match_type="content",
+                            file_path=file_path,
+                            file_name=fname,
+                            rel_path=rel,
+                            line_number=line_idx,
+                            snippet=text_line,
+                            file_size=size,
+                            mtime=mtime,
+                        )
+                        self._put_result(result_queue, res)
+
+                        matches_in_file += 1
+                        if matches_in_file >= MAX_MATCHES_PER_FILE:
+                            break
 
         except (PermissionError, OSError, ValueError):
             pass
@@ -563,11 +669,13 @@ class SearchEngine:
     def _put_result(
         self, result_queue: queue.Queue[Optional[SearchResult]], res: SearchResult
     ) -> None:
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() or self.limit_reached:
             try:
                 result_queue.put(res, timeout=0.05)
                 break
             except queue.Full:
+                if self.stop_event.is_set() and not self.limit_reached:
+                    break
                 continue
 
 
@@ -794,7 +902,8 @@ class FilePreviewModal(ModalScreen[None]):
         Binding("escape", "dismiss_modal", "Fechar"),
         Binding("o", "open_sys", "Abrir"),
         Binding("f", "reveal_finder", "Finder"),
-        Binding("c", "copy_path", "Copiar"),
+        Binding("c", "copy_path", "Copiar Caminho"),
+        Binding("y", "copy_snippet", "Copiar Trecho"),
     ]
 
     def __init__(self, result: SearchResult):
@@ -802,19 +911,23 @@ class FilePreviewModal(ModalScreen[None]):
         self.result = result
 
     def compose(self) -> ComposeResult:
+        safe_path = escape(self.result.file_path)
+        safe_size = escape(format_size(self.result.file_size))
+        safe_mtime = escape(format_mtime(self.result.mtime))
+
         with Vertical(id="preview_dialog"):
             yield Label(f"📄 {self.result.file_name}", id="preview_title")
 
             with Grid(id="meta_grid"):
                 yield Static(
-                    f"[dim]Caminho:[/] [bold]{self.result.file_path}[/]", classes="meta_item"
+                    f"[dim]Caminho:[/] [bold]{safe_path}[/]", classes="meta_item"
                 )
                 yield Static(
-                    f"[dim]Tamanho:[/] [bold]{format_size(self.result.file_size)}[/]",
+                    f"[dim]Tamanho:[/] [bold]{safe_size}[/]",
                     classes="meta_item",
                 )
                 yield Static(
-                    f"[dim]Modificado:[/] [bold]{format_mtime(self.result.mtime)}[/]",
+                    f"[dim]Modificado:[/] [bold]{safe_mtime}[/]",
                     classes="meta_item",
                 )
                 match_desc = (
@@ -832,7 +945,7 @@ class FilePreviewModal(ModalScreen[None]):
                 yield Button("📂 Revelar no Finder (f)", id="btn_reveal_file", variant="default")
                 yield Button("📋 Copiar Caminho (c)", id="btn_copy_path", variant="default")
                 if self.result.snippet:
-                    yield Button("📋 Copiar Trecho", id="btn_copy_snippet", variant="default")
+                    yield Button("📋 Copiar Trecho (y)", id="btn_copy_snippet", variant="default")
                 yield Button("❌ Fechar (Esc)", id="btn_close", variant="error")
 
     def _build_preview_widget(self) -> Static:
@@ -849,8 +962,8 @@ class FilePreviewModal(ModalScreen[None]):
         try:
             line_num = self.result.line_number
             if line_num is not None:
-                start_l = max(1, line_num - 10)
-                end_l = line_num + 10
+                start_l = max(1, line_num - 25)
+                end_l = line_num + 25
                 syntax = Syntax.from_path(
                     str(p),
                     line_numbers=True,
@@ -863,13 +976,13 @@ class FilePreviewModal(ModalScreen[None]):
                 syntax = Syntax.from_path(
                     str(p),
                     line_numbers=True,
-                    line_range=(1, 35),
+                    line_range=(1, 80),
                     theme="monokai",
                     word_wrap=True,
                 )
             return Static(syntax)
         except Exception as e:
-            return Static(f"[red]Erro ao ler prévia:[/] {e}")
+            return Static(f"[red]Erro ao ler prévia:[/] {escape(str(e))}")
 
     @on(Button.Pressed, "#btn_open_file")
     def action_open_sys(self) -> None:
@@ -908,8 +1021,8 @@ class HelpModal(ModalScreen[None]):
     }
 
     #help_dialog {
-        width: 70%;
-        max-width: 80;
+        width: 72%;
+        max-width: 84;
         height: auto;
         border: heavy $accent;
         background: $surface;
@@ -941,12 +1054,14 @@ class HelpModal(ModalScreen[None]):
             yield Static("[bold green]Enter[/] nos inputs: Inicia a busca imediatamente", classes="help_line")
             yield Static("[bold green]Esc[/]: Cancela a busca em andamento ou fecha modais", classes="help_line")
             yield Static("[bold green]Enter / Clique Duplo[/] na tabela: Abre prévia e detalhes do arquivo", classes="help_line")
-            yield Static("[bold green]Ctrl + F[/] ou [/]: Foca no campo de busca", classes="help_line")
+            yield Static("[bold green]Clique no cabeçalho[/] da tabela: Ordena resultados pela coluna", classes="help_line")
+            yield Static("[bold green]Ctrl + F[/] ou [bold green]/[/]: Foca no campo de busca", classes="help_line")
             yield Static("[bold green]Ctrl + P[/]: Abre a janela de seleção de pasta", classes="help_line")
             yield Static("[bold green]Ctrl + L[/]: Limpa os resultados", classes="help_line")
             yield Static("[bold green]o[/] na tabela ou prévia: Abre arquivo no app padrão", classes="help_line")
             yield Static("[bold green]f[/] na tabela ou prévia: Revela arquivo no Finder", classes="help_line")
             yield Static("[bold green]c[/] na tabela ou prévia: Copia caminho do arquivo", classes="help_line")
+            yield Static("[bold green]y[/] na prévia: Copia o trecho da linha encontrada", classes="help_line")
             yield Static("[bold green]F1[/] ou [bold green]?[/]: Exibe esta ajuda", classes="help_line")
             yield Static("[bold green]q[/]: Sai do aplicativo", classes="help_line")
             with Horizontal(id="btn_close_help"):
@@ -1093,16 +1208,32 @@ class FindFileApp(App):
         Binding("q", "quit_app", "Sair", show=True),
     ]
 
-    def __init__(self, initial_folder: str = ".", initial_query: str = ""):
+    def __init__(
+        self,
+        initial_folder: str = ".",
+        initial_query: str = "",
+        initial_content: bool = False,
+        initial_regex: bool = False,
+    ):
         super().__init__()
         self.initial_folder = str(Path(initial_folder).expanduser().resolve())
         self.initial_query = initial_query
+        self.initial_content = initial_content
+        self.initial_regex = initial_regex
+
+        cpu_count = os.cpu_count() or 4
+        self.default_workers = min(32, cpu_count * 4)
 
         self.current_engine: Optional[SearchEngine] = None
         self.results_map: dict[int, SearchResult] = {}
         self.is_searching = False
+        self._search_id = 0
         self._total_found = 0
         self._total_scanned = 0
+        self._last_query = ""
+        self._last_case_sensitive = False
+        self._last_use_regex = False
+        self._sort_reverse: dict[str, bool] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1113,7 +1244,7 @@ class FindFileApp(App):
                 yield Label("🔍 Termo:", classes="row_label")
                 yield Input(
                     value=self.initial_query,
-                    placeholder="Digite o nome do arquivo ou conteúdo a buscar...",
+                    placeholder="Digite o nome do arquivo, trecho de conteúdo ou regex...",
                     id="input_query",
                 )
 
@@ -1131,9 +1262,10 @@ class FindFileApp(App):
             # Linha de Opções (Checkboxes)
             with Horizontal(id="options_row"):
                 yield Label("⚙️ Opções:", classes="row_label")
-                yield Checkbox("No Nome do Arquivo", value=True, id="chk_name")
-                yield Checkbox("No Conteúdo (Grep)", value=False, id="chk_content")
+                yield Checkbox("No Nome", value=True, id="chk_name")
+                yield Checkbox("No Conteúdo (Grep)", value=self.initial_content, id="chk_content")
                 yield Checkbox("Case Sensitive", value=False, id="chk_case")
+                yield Checkbox("Regex", value=self.initial_regex, id="chk_regex")
                 yield Checkbox("Ignorar Caches & .git", value=True, id="chk_ignore")
 
             # Linha de Filtro de Extensão e Botões
@@ -1153,7 +1285,7 @@ class FindFileApp(App):
             yield Label("0 matches", id="pill_matches", classes="stat_pill")
             yield Label("0 escaneados", id="pill_scanned", classes="stat_pill")
             yield Label("0.0s", id="pill_time", classes="stat_pill")
-            yield Label("16 threads", id="pill_threads", classes="stat_pill")
+            yield Label(f"{self.default_workers} threads", id="pill_threads", classes="stat_pill")
 
         yield ProgressBar(id="progress_bar")
 
@@ -1167,15 +1299,13 @@ class FindFileApp(App):
     def on_mount(self) -> None:
         """Inicializa colunas da tabela e foca no input de busca."""
         table = self.query_one("#results_table", DataTable)
-        table.add_columns(
-            "#",
-            "Tipo",
-            "Arquivo",
-            "Linha",
-            "Ocorrência / Prévia",
-            "Tamanho",
-            "Caminho Relativo",
-        )
+        table.add_column("#", key="idx")
+        table.add_column("Tipo", key="type")
+        table.add_column("Arquivo", key="name")
+        table.add_column("Linha", key="line")
+        table.add_column("Ocorrência / Prévia", key="snippet")
+        table.add_column("Tamanho", key="size")
+        table.add_column("Caminho Relativo", key="rel_path")
 
         # Se houver termo inicial passado via CLI, executa imediatamente
         if self.initial_query:
@@ -1215,6 +1345,7 @@ class FindFileApp(App):
 
     @on(Button.Pressed, "#btn_clear")
     def clear_results(self) -> None:
+        self._search_id += 1
         self.stop_search()
         table = self.query_one("#results_table", DataTable)
         table.clear()
@@ -1254,7 +1385,15 @@ class FindFileApp(App):
             return
 
         case_sensitive = self.query_one("#chk_case", Checkbox).value
+        use_regex = self.query_one("#chk_regex", Checkbox).value
         ignore_caches = self.query_one("#chk_ignore", Checkbox).value
+
+        if use_regex:
+            try:
+                re.compile(query)
+            except re.error as err:
+                self.notify(f"Expressão regular inválida: {err}", severity="error")
+                return
 
         # Parse extensões
         ext_raw = self.query_one("#input_exts", Input).value.strip()
@@ -1266,8 +1405,14 @@ class FindFileApp(App):
                 if e.strip().lstrip("*.")
             }
 
-        # Interrompe qualquer busca anterior em andamento
+        # Interrompe qualquer busca anterior em andamento e invalida callbacks antigos
         self.stop_search()
+        self._search_id += 1
+        current_search_id = self._search_id
+
+        self._last_query = query
+        self._last_case_sensitive = case_sensitive
+        self._last_use_regex = use_regex
 
         # Limpa tabela e mapas
         table = self.query_one("#results_table", DataTable)
@@ -1285,34 +1430,50 @@ class FindFileApp(App):
 
         # Dispara thread worker de busca
         self.run_search_worker(
+            search_id=current_search_id,
             root_dir=str(folder_path),
             query=query,
             search_name=search_name,
             search_content=search_content,
             case_sensitive=case_sensitive,
             ignore_caches=ignore_caches,
+            use_regex=use_regex,
             ext_filter=ext_set,
         )
 
     @work(thread=True, exclusive=True)
     def run_search_worker(
         self,
+        search_id: int,
         root_dir: str,
         query: str,
         search_name: bool,
         search_content: bool,
         case_sensitive: bool,
         ignore_caches: bool,
+        use_regex: bool,
         ext_filter: Optional[Set[str]],
     ) -> None:
         """Executa o SearchEngine em thread em segundo plano."""
 
         def on_batch_cb(batch: List[SearchResult]) -> None:
-            self.call_from_thread(self._add_results_batch, batch, query, case_sensitive)
+            self.call_from_thread(
+                self._add_results_batch,
+                search_id,
+                batch,
+                query,
+                case_sensitive,
+                use_regex,
+            )
 
         def on_progress_cb(scanned: int, found: int, elapsed: float, is_running: bool) -> None:
             self.call_from_thread(
-                self._update_progress_ui, scanned, found, elapsed, is_running
+                self._update_progress_ui,
+                search_id,
+                scanned,
+                found,
+                elapsed,
+                is_running,
             )
 
         engine = SearchEngine(
@@ -1322,61 +1483,92 @@ class FindFileApp(App):
             search_content=search_content,
             case_sensitive=case_sensitive,
             ignore_caches=ignore_caches,
+            use_regex=use_regex,
             ext_filter=ext_filter,
             on_batch=on_batch_cb,
             on_progress=on_progress_cb,
         )
         self.current_engine = engine
 
+        scanned, found, elapsed = 0, 0, 0.0
         try:
             scanned, found, elapsed = engine.run()
         finally:
-            self.call_from_thread(self._finish_search_ui, scanned, found, elapsed)
+            self.call_from_thread(
+                self._finish_search_ui,
+                search_id,
+                engine,
+                scanned,
+                found,
+                elapsed,
+            )
 
     def _add_results_batch(
-        self, batch: List[SearchResult], query: str, case_sensitive: bool
+        self,
+        search_id: int,
+        batch: List[SearchResult],
+        query: str,
+        case_sensitive: bool,
+        use_regex: bool,
     ) -> None:
         """Adiciona lote de resultados à tabela na thread principal do Textual."""
+        if search_id != self._search_id:
+            return
+
         table = self.query_one("#results_table", DataTable)
 
         for res in batch:
             self.results_map[res.idx] = res
+            self._add_result_row(table, res, query, case_sensitive, use_regex)
 
-            type_badge = (
-                Text("📝 Conteúdo", style="bold cyan")
-                if res.match_type == "content"
-                else Text("📄 Nome", style="bold green")
-            )
+    def _add_result_row(
+        self,
+        table: DataTable,
+        res: SearchResult,
+        query: str,
+        case_sensitive: bool,
+        use_regex: bool,
+    ) -> None:
+        type_badge = (
+            Text("📝 Conteúdo", style="bold cyan")
+            if res.match_type == "content"
+            else Text("📄 Nome", style="bold green")
+        )
 
-            # Destaca a palavra no nome do arquivo
-            name_text = highlight_match(res.file_name, query, case_sensitive)
+        name_text = highlight_match(res.file_name, query, case_sensitive, use_regex)
+        line_str = f"L{res.line_number}" if res.line_number is not None else "-"
 
-            line_str = f"L{res.line_number}" if res.line_number is not None else "-"
+        snippet_text = (
+            highlight_match(res.snippet, query, case_sensitive, use_regex)
+            if res.snippet
+            else Text(f"Arquivo correspondente: {res.file_name}", style="dim")
+        )
 
-            # Destaca a palavra no trecho de código
-            snippet_text = (
-                highlight_match(res.snippet, query, case_sensitive)
-                if res.snippet
-                else Text(f"Arquivo correspondente: {res.file_name}", style="dim")
-            )
+        size_str = format_size(res.file_size)
 
-            size_str = format_size(res.file_size)
-
-            table.add_row(
-                str(res.idx),
-                type_badge,
-                name_text,
-                line_str,
-                snippet_text,
-                size_str,
-                res.rel_path,
-                key=str(res.idx),
-            )
+        table.add_row(
+            str(res.idx),
+            type_badge,
+            name_text,
+            line_str,
+            snippet_text,
+            size_str,
+            res.rel_path,
+            key=str(res.idx),
+        )
 
     def _update_progress_ui(
-        self, scanned: int, found: int, elapsed: float, is_running: bool
+        self,
+        search_id: int,
+        scanned: int,
+        found: int,
+        elapsed: float,
+        is_running: bool,
     ) -> None:
         """Atualiza indicadores e contadores em tempo real."""
+        if search_id != self._search_id:
+            return
+
         self._total_scanned = scanned
         self._total_found = found
 
@@ -1390,21 +1582,37 @@ class FindFileApp(App):
                 f"⚡ Buscando... ({speed:,} arquivos/s)".replace(",", ".")
             )
 
-    def _finish_search_ui(self, scanned: int, found: int, elapsed: float) -> None:
+    def _finish_search_ui(
+        self,
+        search_id: int,
+        engine: SearchEngine,
+        scanned: int,
+        found: int,
+        elapsed: float,
+    ) -> None:
         """Finaliza a busca e reativa botões."""
+        if search_id != self._search_id:
+            return
+
         self.is_searching = False
         self.query_one("#btn_search", Button).disabled = False
         self.query_one("#btn_stop", Button).disabled = True
         self.query_one("#progress_bar", ProgressBar).styles.display = "none"
 
-        stopped = self.current_engine.is_stopped() if self.current_engine else False
-        status_msg = "⏹️ Busca interrompida." if stopped else "✅ Busca concluída."
+        if engine.limit_reached:
+            status_msg = f"⚠️ Limite de {engine.max_results:,} resultados atingido.".replace(",", ".")
+        elif engine.is_stopped():
+            status_msg = "⏹️ Busca interrompida."
+        else:
+            status_msg = "✅ Busca concluída."
+
         self.query_one("#lbl_status", Label).update(
             f"{status_msg} Encontrados {found} resultado(s) em {scanned:,} arquivos ({elapsed:.2f}s).".replace(
                 ",", "."
             )
         )
-        self.current_engine = None
+        if self.current_engine is engine:
+            self.current_engine = None
 
     def stop_search(self) -> None:
         """Interrompe a busca atual se estiver em andamento."""
@@ -1416,8 +1624,43 @@ class FindFileApp(App):
         self.query_one("#progress_bar", ProgressBar).styles.display = "none"
 
     # -------------------------------------------------------------------------
-    # Interações com a Tabela de Resultados
+    # Interações com a Tabela de Resultados (Seleção e Ordenação)
     # -------------------------------------------------------------------------
+
+    @on(DataTable.HeaderSelected, "#results_table")
+    def on_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        """Ordena os resultados ao clicar no cabeçalho de uma coluna."""
+        if self.is_searching or not self.results_map:
+            return
+
+        col_key = str(event.column_key.value)
+        reverse = not self._sort_reverse.get(col_key, False)
+        self._sort_reverse[col_key] = reverse
+
+        key_funcs = {
+            "idx": lambda r: r.idx,
+            "type": lambda r: r.match_type,
+            "name": lambda r: r.file_name.lower(),
+            "line": lambda r: r.line_number or 0,
+            "snippet": lambda r: r.snippet.lower(),
+            "size": lambda r: r.file_size,
+            "rel_path": lambda r: r.rel_path.lower(),
+        }
+        sort_fn = key_funcs.get(col_key)
+        if not sort_fn:
+            return
+
+        sorted_results = sorted(self.results_map.values(), key=sort_fn, reverse=reverse)
+        table = self.query_one("#results_table", DataTable)
+        table.clear()
+        for res in sorted_results:
+            self._add_result_row(
+                table,
+                res,
+                self._last_query,
+                self._last_case_sensitive,
+                self._last_use_regex,
+            )
 
     @on(DataTable.RowSelected, "#results_table")
     def on_result_selected(self, event: DataTable.RowSelected) -> None:
@@ -1448,7 +1691,10 @@ class FindFileApp(App):
             return
 
         char = event.character
-        if char == "o":
+        if char == "/":
+            event.stop()
+            self.action_focus_search()
+        elif char == "o":
             res = self.get_selected_result()
             if res:
                 open_file_in_system(res.file_path)
@@ -1503,9 +1749,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemplos de uso:
-  findfile.py                         # Abre na pasta atual
-  findfile.py ~/Documents             # Abre na pasta especificada
-  findfile.py ~/Projetos "config"     # Inicia buscando 'config' na pasta
+  findfile.py                           # Abre na pasta atual
+  findfile.py ~/Documents               # Abre na pasta especificada
+  findfile.py ~/Projetos "config"       # Inicia buscando 'config' na pasta
+  findfile.py . "def main" -c           # Busca 'def main' no conteúdo dos arquivos
+  findfile.py . "def\\s+test_" -c -r    # Busca por expressão regular no conteúdo
         """,
     )
     parser.add_argument(
@@ -1520,10 +1768,27 @@ Exemplos de uso:
         default="",
         help="Termo inicial de busca (opcional)",
     )
+    parser.add_argument(
+        "-c",
+        "--content",
+        action="store_true",
+        help="Ativa a busca no conteúdo dos arquivos (Grep) ao iniciar",
+    )
+    parser.add_argument(
+        "-r",
+        "--regex",
+        action="store_true",
+        help="Ativa o modo de Expressão Regular (Regex) ao iniciar",
+    )
 
     args = parser.parse_args()
 
-    app = FindFileApp(initial_folder=args.folder, initial_query=args.query)
+    app = FindFileApp(
+        initial_folder=args.folder,
+        initial_query=args.query,
+        initial_content=args.content,
+        initial_regex=args.regex,
+    )
     app.run()
 
 
