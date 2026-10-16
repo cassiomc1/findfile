@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FindFile - Buscador Ultrarrápido de Arquivos e Conteúdo com TUI
-Suporta busca por nome de arquivo e por conteúdo de arquivos em modo multithread.
+FindFile — fast terminal search for file names and file contents.
+Multithreaded scan with a Textual interface.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from textual.widgets import (
 )
 
 # -----------------------------------------------------------------------------
-# Constantes de Configuração
+# Configuration
 # -----------------------------------------------------------------------------
 
 IGNORED_DIRS = {
@@ -75,19 +75,19 @@ IGNORED_DIRS = {
 }
 
 BINARY_EXTENSIONS = {
-    # Imagens
+    # Images
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".tiff", ".psd", ".raw",
-    # Áudio / Vídeo
+    # Audio / video
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac",
-    # Documentos binários
+    # Binary documents
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    # Arquivos compactados
+    # Archives
     ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".tgz", ".zst", ".iso", ".dmg",
-    # Executáveis / Bibliotecas
+    # Executables / libraries
     ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".app",
-    # Bytecode / Bancos de dados
+    # Bytecode / databases
     ".pyc", ".pyo", ".pyd", ".class", ".jar", ".war", ".db", ".sqlite", ".sqlite3", ".parquet",
-    # Fontes
+    # Fonts
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
 }
 
@@ -115,11 +115,11 @@ class SearchResult:
 
 
 # -----------------------------------------------------------------------------
-# Utilitários de Suporte
+# Helpers
 # -----------------------------------------------------------------------------
 
 def format_size(size_bytes: int) -> str:
-    """Formata tamanho de arquivo em representação legível (B, KB, MB, GB)."""
+    """Format a byte size as B, KB, MB, or GB."""
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
@@ -131,7 +131,7 @@ def format_size(size_bytes: int) -> str:
 
 
 def format_mtime(timestamp: float) -> str:
-    """Formata data de modificação."""
+    """Format a modification timestamp."""
     try:
         dt = datetime.datetime.fromtimestamp(timestamp)
         return dt.strftime("%Y-%m-%d %H:%M")
@@ -140,7 +140,7 @@ def format_mtime(timestamp: float) -> str:
 
 
 def is_binary_file(filepath: str) -> bool:
-    """Verifica rapidamente se um arquivo é binário antes de ler o conteúdo."""
+    """Return True when the file looks binary."""
     ext = os.path.splitext(filepath)[1].lower()
     if ext in BINARY_EXTENSIONS:
         return True
@@ -155,7 +155,7 @@ def is_binary_file(filepath: str) -> bool:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Copia texto para a área de transferência do sistema (macOS pbcopy, wl-copy ou xclip)."""
+    """Copy text to the system clipboard (pbcopy, wl-copy, or xclip)."""
     if sys.platform == "darwin":
         try:
             subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
@@ -178,7 +178,7 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 def open_file_in_system(filepath: str) -> bool:
-    """Abre o arquivo no aplicativo padrão do sistema."""
+    """Open a file in the system default application."""
     try:
         if sys.platform == "darwin":
             subprocess.Popen(
@@ -200,7 +200,7 @@ def open_file_in_system(filepath: str) -> bool:
 
 
 def reveal_in_file_manager(filepath: str) -> bool:
-    """Revela o arquivo no Finder (macOS) ou gerenciador de arquivos."""
+    """Reveal a file in Finder or the system file manager."""
     try:
         if sys.platform == "darwin":
             subprocess.Popen(
@@ -228,7 +228,7 @@ def highlight_match(
     case_sensitive: bool = False,
     use_regex: bool = False,
 ) -> Text:
-    """Cria objeto Rich Text com a string ou expressão regular destacada visualmente."""
+    """Return Rich text with the term or regular expression highlighted."""
     rich_text = Text()
     if not query:
         rich_text.append(text)
@@ -256,11 +256,11 @@ def highlight_match(
 
 
 # -----------------------------------------------------------------------------
-# Motor de Busca Multithread de Alta Performance
+# Multithreaded search engine
 # -----------------------------------------------------------------------------
 
 class SearchEngine:
-    """Motor multithread de busca de arquivos e conteúdo."""
+    """Multithreaded search over file names and file contents."""
 
     def __init__(
         self,
@@ -306,20 +306,20 @@ class SearchEngine:
             self._regex_pattern = re.compile(self.query, flags=flags)
 
     def stop(self) -> None:
-        """Sinaliza para todas as threads abortarem imediatamente."""
+        """Ask every worker to stop immediately."""
         self.stop_event.set()
 
     def is_stopped(self) -> bool:
         return self.stop_event.is_set()
 
     def run(self) -> Tuple[int, int, float]:
-        """Executa a busca multithread e retorna (arquivos_escaneados, resultados, tempo_gasto)."""
+        """Run the search. Returns (files scanned, matches, elapsed seconds)."""
         start_time = time.perf_counter()
 
         if not os.path.isdir(self.root_dir) or not self.query:
             return 0, 0, 0.0
 
-        # Filas com limites para manter consumo de memória estritamente controlado
+        # Bounded queues keep memory use in check.
         file_queue: queue.Queue[Optional[str]] = queue.Queue(maxsize=1500)
         result_queue: queue.Queue[Optional[SearchResult]] = queue.Queue(maxsize=2000)
 
@@ -329,7 +329,7 @@ class SearchEngine:
 
         query_str = self.query if self.case_sensitive else self.query.lower()
 
-        # Thread despachante de resultados para a interface
+        # Thread that forwards result batches to the UI.
         dispatcher_stop = threading.Event()
 
         def result_dispatcher():
@@ -353,7 +353,7 @@ class SearchEngine:
                     batch = []
                     last_flush = now
 
-                # Atualiza progresso periodicamente com timer independente
+                # Report progress on a timer.
                 if self.on_progress and (now - last_progress) >= 0.06:
                     with self._counter_lock:
                         scanned = self._files_scanned
@@ -368,7 +368,7 @@ class SearchEngine:
         dispatcher_thread = threading.Thread(target=result_dispatcher, daemon=True)
         dispatcher_thread.start()
 
-        # Operação de inspeção de conteúdo por workers
+        # Content scan performed by worker threads.
         def content_worker():
             while not self.stop_event.is_set():
                 try:
@@ -387,7 +387,7 @@ class SearchEngine:
                 finally:
                     file_queue.task_done()
 
-        # Inicia pool de workers para busca de conteúdo (se ativada)
+        # Start content workers when content search is enabled.
         workers: List[threading.Thread] = []
         if self.search_content:
             for _ in range(self.max_workers):
@@ -399,7 +399,7 @@ class SearchEngine:
         try:
             self._crawl_filesystem(file_queue, result_queue, query_str)
         finally:
-            # Envia sentinelas de término para os workers de conteúdo
+            # Tell content workers to exit.
             if self.search_content:
                 for _ in range(len(workers)):
                     while not self.stop_event.is_set():
@@ -412,7 +412,7 @@ class SearchEngine:
                 for t in workers:
                     t.join(timeout=0.5)
 
-            # Notifica término do despachante
+            # Tell the dispatcher to exit.
             dispatcher_stop.set()
             dispatcher_thread.join(timeout=1.0)
 
@@ -427,7 +427,7 @@ class SearchEngine:
         return self._files_scanned, self._results_found, elapsed
 
     def _register_result(self) -> Optional[int]:
-        """Incrementa contador de resultados com verificação de limite máximo."""
+        """Count one match and stop once the result cap is hit."""
         with self._counter_lock:
             if self._results_found >= self.max_results:
                 self.limit_reached = True
@@ -446,7 +446,7 @@ class SearchEngine:
         result_queue: queue.Queue[Optional[SearchResult]],
         query_str: str,
     ) -> None:
-        """Percorre a árvore de diretórios via os.scandir com velocidade máxima."""
+        """Walk the directory tree with os.scandir."""
         stack = [self.root_dir]
         visited_dirs: Set[Tuple[int, int]] = set()
 
@@ -472,7 +472,7 @@ class SearchEngine:
 
                         name = entry.name
 
-                        # Filtro de diretórios ignorados
+                        # Skip ignored directories.
                         if entry.is_dir(follow_symlinks=False):
                             if self.ignore_caches:
                                 if name.startswith(".") or name in IGNORED_DIRS:
@@ -487,13 +487,13 @@ class SearchEngine:
                         with self._counter_lock:
                             self._files_scanned += 1
 
-                        # Filtro de extensões caso configurado
+                        # Optional extension filter.
                         if self.ext_filter is not None:
                             ext = os.path.splitext(name)[1].lower().lstrip(".")
                             if ext not in self.ext_filter:
                                 continue
 
-                        # 1. Checagem de busca por NOME
+                        # 1. Name match.
                         if self.search_name:
                             if self.use_regex and self._regex_pattern is not None:
                                 name_matched = bool(self._regex_pattern.search(name))
@@ -533,9 +533,9 @@ class SearchEngine:
                                 )
                                 self._put_result(result_queue, res)
 
-                        # 2. Enfileiramento para busca por CONTEÚDO
+                        # 2. Queue the file for a content search.
                         if self.search_content and not self.stop_event.is_set():
-                            # Ignora binários conhecidos antes de enfileirar
+                            # Skip known binaries before queueing.
                             ext = os.path.splitext(name)[1].lower()
                             if ext not in BINARY_EXTENSIONS:
                                 while not self.stop_event.is_set():
@@ -554,7 +554,7 @@ class SearchEngine:
         query_str: str,
         result_queue: queue.Queue[Optional[SearchResult]],
     ) -> None:
-        """Abre o arquivo uma única vez, valida se não é binário e busca por conteúdo."""
+        """Open the file once, reject binaries, and search its contents."""
         try:
             with open(file_path, "rb") as f:
                 st = os.fstat(f.fileno())
@@ -570,7 +570,7 @@ class SearchEngine:
                 data = head if not rest else head + rest
                 mtime = st.st_mtime
 
-            # Caminho rápido em bytes para buscas literais ASCII ou case-sensitive
+            # Fast byte path for ASCII literals and case-sensitive searches.
             use_fast_bytes = (not self.use_regex) and (
                 self.case_sensitive or self.query.isascii()
             )
@@ -615,7 +615,7 @@ class SearchEngine:
                         if matches_in_file >= MAX_MATCHES_PER_FILE:
                             break
             else:
-                # Caminho Unicode completo (para Regex ou termos acentuados case-insensitive)
+                # Full Unicode path for regex and case-insensitive accented terms.
                 text_data = data.decode("utf-8", errors="replace")
                 if self.use_regex and self._regex_pattern is not None:
                     if not self._regex_pattern.search(text_data):
@@ -680,49 +680,53 @@ class SearchEngine:
 
 
 # -----------------------------------------------------------------------------
-# Modais Interativos (Seleção de Pasta, Prévia e Ajuda)
+# Dialogs: folder picker, preview, and help
 # -----------------------------------------------------------------------------
 
 class CustomFolderTree(DirectoryTree):
-    """Árvore que exibe apenas diretórios para seleção amigável de pastas."""
+    """Directory tree that lists folders only."""
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
         return [p for p in paths if p.is_dir() and not p.name.startswith(".")]
 
 
 class FolderPickerModal(ModalScreen[Optional[str]]):
-    """Modal para seleção visual de diretório com atalhos rápidos."""
+    """Dialog for picking a folder, with shortcuts."""
 
     DEFAULT_CSS = """
     FolderPickerModal {
         align: center middle;
-        background: rgba(0, 0, 0, 0.75);
+        background: rgba(17, 17, 27, 0.82);
     }
 
     #folder_dialog {
-        width: 85%;
-        max-width: 90;
-        height: 82%;
-        border: heavy $accent;
-        background: $surface;
+        width: 86%;
+        max-width: 96;
+        height: 84%;
+        border: solid #89b4fa;
+        background: #1e1e2e;
         padding: 1 2;
     }
 
     #folder_title {
         text-style: bold;
-        color: $accent;
+        color: #cdd6f4;
+        text-align: left;
+    }
+
+    #folder_subtitle {
+        color: #6c7086;
         margin-bottom: 1;
-        text-align: center;
     }
 
     #quick_paths {
         height: auto;
         margin-bottom: 1;
-        align: center middle;
+        align: left middle;
     }
 
     #quick_paths Button {
-        margin: 0 1;
+        margin: 0 1 0 0;
         min-width: 12;
     }
 
@@ -732,7 +736,8 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
 
     #folder_tree {
         height: 1fr;
-        border: solid $primary-muted;
+        border: solid #45475a;
+        background: #11111b;
         margin-bottom: 1;
     }
 
@@ -747,8 +752,8 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
     """
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancelar"),
-        Binding("enter", "confirm", "Confirmar"),
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "confirm", "Confirm"),
     ]
 
     def __init__(self, initial_path: str = "."):
@@ -758,23 +763,24 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="folder_dialog"):
-            yield Label("📁 Selecionar Pasta para Busca", id="folder_title")
+            yield Label("Choose folder", id="folder_title")
+            yield Static("Shortcuts, a typed path, or the tree below.", id="folder_subtitle")
 
             with Horizontal(id="quick_paths"):
-                yield Button("🏠 Home", id="quick_home", variant="default")
-                yield Button("📍 Atual", id="quick_cwd", variant="default")
-                yield Button("📄 Docs", id="quick_docs", variant="default")
-                yield Button("⬇️ Downloads", id="quick_downloads", variant="default")
-                yield Button("⬆️ Subir (..)", id="quick_up", variant="default")
+                yield Button("Home", id="quick_home", variant="default")
+                yield Button("Here", id="quick_cwd", variant="default")
+                yield Button("Docs", id="quick_docs", variant="default")
+                yield Button("Downloads", id="quick_downloads", variant="default")
+                yield Button("Up", id="quick_up", variant="default")
 
             yield Input(value=self.current_path, id="modal_folder_input")
 
-            # Árvore de navegação
+            # Navigation tree
             yield CustomFolderTree(self.current_path, id="folder_tree")
 
             with Horizontal(id="modal_actions"):
-                yield Button("❌ Cancelar (Esc)", id="btn_modal_cancel", variant="error")
-                yield Button("✅ Selecionar Esta Pasta", id="btn_modal_confirm", variant="success")
+                yield Button("Cancel", id="btn_modal_cancel", variant="default")
+                yield Button("Use this folder", id="btn_modal_confirm", variant="primary")
 
     @on(DirectoryTree.DirectorySelected)
     def on_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
@@ -839,71 +845,63 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
 
 
 class FilePreviewModal(ModalScreen[None]):
-    """Modal de inspeção detalhada com prévia de código e ações do arquivo."""
+    """Dialog with file metadata, a code preview, and actions."""
 
     DEFAULT_CSS = """
     FilePreviewModal {
         align: center middle;
-        background: rgba(0, 0, 0, 0.78);
+        background: rgba(17, 17, 27, 0.84);
     }
 
     #preview_dialog {
-        width: 90%;
-        max-width: 120;
-        height: 85%;
-        border: heavy $primary;
-        background: $surface;
+        width: 92%;
+        max-width: 128;
+        height: 88%;
+        border: solid #89b4fa;
+        background: #1e1e2e;
         padding: 1 2;
     }
 
     #preview_title {
         text-style: bold;
-        color: $accent;
-        margin-bottom: 1;
+        color: #cdd6f4;
     }
 
-    #meta_grid {
-        grid-size: 2;
-        grid-gutter: 0 2;
-        height: auto;
+    #preview_path {
+        color: #6c7086;
+    }
+
+    #preview_meta {
+        color: #a6adc8;
         margin-bottom: 1;
-        border-bottom: solid $primary-muted;
         padding-bottom: 1;
-    }
-
-    .meta_item {
-        color: $text-muted;
-    }
-
-    .meta_val {
-        color: $text;
-        text-style: bold;
+        border-bottom: solid #313244;
     }
 
     #preview_scroll {
         height: 1fr;
-        border: solid $primary-muted;
-        background: #1e1e2e;
-        padding: 1;
+        border: solid #45475a;
+        background: #11111b;
+        padding: 0 1;
         margin-bottom: 1;
     }
 
     #preview_actions {
         height: auto;
-        align: right middle;
+        align: left middle;
     }
 
     #preview_actions Button {
-        margin-left: 1;
+        margin: 0 1 0 0;
     }
     """
 
     BINDINGS = [
-        Binding("escape", "dismiss_modal", "Fechar"),
-        Binding("o", "open_sys", "Abrir"),
+        Binding("escape", "dismiss_modal", "Close"),
+        Binding("o", "open_sys", "Open"),
         Binding("f", "reveal_finder", "Finder"),
-        Binding("c", "copy_path", "Copiar Caminho"),
-        Binding("y", "copy_snippet", "Copiar Trecho"),
+        Binding("c", "copy_path", "Copy path"),
+        Binding("y", "copy_snippet", "Copy snippet"),
     ]
 
     def __init__(self, result: SearchResult):
@@ -916,47 +914,40 @@ class FilePreviewModal(ModalScreen[None]):
         safe_mtime = escape(format_mtime(self.result.mtime))
 
         with Vertical(id="preview_dialog"):
-            yield Label(f"📄 {self.result.file_name}", id="preview_title")
+            yield Label(self.result.file_name, id="preview_title")
+            yield Static(safe_path, id="preview_path")
 
-            with Grid(id="meta_grid"):
-                yield Static(
-                    f"[dim]Caminho:[/] [bold]{safe_path}[/]", classes="meta_item"
-                )
-                yield Static(
-                    f"[dim]Tamanho:[/] [bold]{safe_size}[/]",
-                    classes="meta_item",
-                )
-                yield Static(
-                    f"[dim]Modificado:[/] [bold]{safe_mtime}[/]",
-                    classes="meta_item",
-                )
-                match_desc = (
-                    f"Conteúdo (Linha {self.result.line_number})"
-                    if self.result.match_type == "content"
-                    else "Nome do Arquivo"
-                )
-                yield Static(f"[dim]Match:[/] [bold green]{match_desc}[/]", classes="meta_item")
+            match_desc = (
+                f"content, line {self.result.line_number}"
+                if self.result.match_type == "content"
+                else "file name"
+            )
+            yield Static(
+                f"[bold]{safe_size}[/]   [#6c7086]·[/]   [bold]{safe_mtime}[/]"
+                f"   [#6c7086]·[/]   [bold #a6e3a1]{match_desc}[/]",
+                id="preview_meta",
+            )
 
             with VerticalScroll(id="preview_scroll"):
                 yield self._build_preview_widget()
 
             with Horizontal(id="preview_actions"):
-                yield Button("🚀 Abrir (o)", id="btn_open_file", variant="primary")
-                yield Button("📂 Revelar no Finder (f)", id="btn_reveal_file", variant="default")
-                yield Button("📋 Copiar Caminho (c)", id="btn_copy_path", variant="default")
+                yield Button("Open  o", id="btn_open_file", variant="primary")
+                yield Button("Reveal  f", id="btn_reveal_file", variant="default")
+                yield Button("Path  c", id="btn_copy_path", variant="default")
                 if self.result.snippet:
-                    yield Button("📋 Copiar Trecho (y)", id="btn_copy_snippet", variant="default")
-                yield Button("❌ Fechar (Esc)", id="btn_close", variant="error")
+                    yield Button("Snippet  y", id="btn_copy_snippet", variant="default")
+                yield Button("Close", id="btn_close", variant="default")
 
     def _build_preview_widget(self) -> Static:
-        """Carrega e formata a prévia do arquivo com realce de sintaxe."""
+        """Load a syntax-highlighted preview of the file."""
         p = Path(self.result.file_path)
         if not p.is_file():
-            return Static("[red]Arquivo não encontrado ou inacessível.[/]")
+            return Static("[red]File not found or unreadable.[/]")
 
         if is_binary_file(self.result.file_path):
             return Static(
-                "[italic yellow]Arquivo binário detectado. Prévia de texto não disponível.[/]"
+                "[italic yellow]Binary file. Text preview is unavailable.[/]"
             )
 
         try:
@@ -982,29 +973,29 @@ class FilePreviewModal(ModalScreen[None]):
                 )
             return Static(syntax)
         except Exception as e:
-            return Static(f"[red]Erro ao ler prévia:[/] {escape(str(e))}")
+            return Static(f"[red]Could not read preview:[/] {escape(str(e))}")
 
     @on(Button.Pressed, "#btn_open_file")
     def action_open_sys(self) -> None:
         open_file_in_system(self.result.file_path)
-        self.notify("Arquivo aberto no aplicativo do sistema!")
+        self.notify("Opened in the default application.")
 
     @on(Button.Pressed, "#btn_reveal_file")
     def action_reveal_finder(self) -> None:
         reveal_in_file_manager(self.result.file_path)
-        self.notify("Pasta revelada no gerenciador de arquivos!")
+        self.notify("Revealed in the file manager.")
 
     @on(Button.Pressed, "#btn_copy_path")
     def action_copy_path(self) -> None:
         if copy_to_clipboard(self.result.file_path):
-            self.notify("Caminho copiado para a área de transferência!")
+            self.notify("Path copied to the clipboard.")
         else:
-            self.notify("Falha ao copiar caminho", severity="warning")
+            self.notify("Could not copy the path.", severity="warning")
 
     @on(Button.Pressed, "#btn_copy_snippet")
     def action_copy_snippet(self) -> None:
         if self.result.snippet and copy_to_clipboard(self.result.snippet):
-            self.notify("Trecho copiado!")
+            self.notify("Snippet copied.")
 
     @on(Button.Pressed, "#btn_close")
     def action_dismiss_modal(self) -> None:
@@ -1012,60 +1003,84 @@ class FilePreviewModal(ModalScreen[None]):
 
 
 class HelpModal(ModalScreen[None]):
-    """Modal com lista de atalhos e instruções rápidas."""
+    """Dialog listing keyboard shortcuts."""
 
     DEFAULT_CSS = """
     HelpModal {
         align: center middle;
-        background: rgba(0, 0, 0, 0.75);
+        background: rgba(17, 17, 27, 0.82);
     }
 
     #help_dialog {
-        width: 72%;
-        max-width: 84;
+        width: 78%;
+        max-width: 92;
         height: auto;
-        border: heavy $accent;
-        background: $surface;
+        max-height: 90%;
+        border: solid #89b4fa;
+        background: #1e1e2e;
         padding: 1 2;
     }
 
     #help_title {
         text-style: bold;
-        color: $accent;
-        margin-bottom: 1;
-        text-align: center;
+        color: #cdd6f4;
     }
 
-    .help_line {
-        margin: 0 0;
+    #help_subtitle {
+        color: #6c7086;
+        margin-bottom: 1;
+    }
+
+    #help_grid {
+        grid-size: 2;
+        grid-gutter: 0 2;
+        grid-columns: 18 1fr;
+        height: auto;
+    }
+
+    .help_key {
+        color: #a6e3a1;
+        text-style: bold;
+    }
+
+    .help_desc {
+        color: #cdd6f4;
     }
 
     #btn_close_help {
         margin-top: 1;
-        align: center middle;
+        height: auto;
+        align: right middle;
     }
     """
 
-    BINDINGS = [Binding("escape", "dismiss", "Fechar")]
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
 
     def compose(self) -> ComposeResult:
+        shortcuts = (
+            ("Enter", "Start a search from the fields"),
+            ("Esc", "Stop the search or close the dialog"),
+            ("Enter on row", "Open the file preview"),
+            ("Column header", "Sort the table by that column"),
+            ("Ctrl+F  /", "Focus the search field"),
+            ("Ctrl+P", "Open the folder picker"),
+            ("Ctrl+L", "Clear the results"),
+            ("o", "Open the file in the default app"),
+            ("f", "Reveal the file in Finder"),
+            ("c", "Copy the full path"),
+            ("y", "Copy the matched snippet"),
+            ("F1  ?", "Show this help"),
+            ("q", "Quit"),
+        )
         with Vertical(id="help_dialog"):
-            yield Label("💡 Atalhos e Dicas do FindFile", id="help_title")
-            yield Static("[bold green]Enter[/] nos inputs: Inicia a busca imediatamente", classes="help_line")
-            yield Static("[bold green]Esc[/]: Cancela a busca em andamento ou fecha modais", classes="help_line")
-            yield Static("[bold green]Enter / Clique Duplo[/] na tabela: Abre prévia e detalhes do arquivo", classes="help_line")
-            yield Static("[bold green]Clique no cabeçalho[/] da tabela: Ordena resultados pela coluna", classes="help_line")
-            yield Static("[bold green]Ctrl + F[/] ou [bold green]/[/]: Foca no campo de busca", classes="help_line")
-            yield Static("[bold green]Ctrl + P[/]: Abre a janela de seleção de pasta", classes="help_line")
-            yield Static("[bold green]Ctrl + L[/]: Limpa os resultados", classes="help_line")
-            yield Static("[bold green]o[/] na tabela ou prévia: Abre arquivo no app padrão", classes="help_line")
-            yield Static("[bold green]f[/] na tabela ou prévia: Revela arquivo no Finder", classes="help_line")
-            yield Static("[bold green]c[/] na tabela ou prévia: Copia caminho do arquivo", classes="help_line")
-            yield Static("[bold green]y[/] na prévia: Copia o trecho da linha encontrada", classes="help_line")
-            yield Static("[bold green]F1[/] ou [bold green]?[/]: Exibe esta ajuda", classes="help_line")
-            yield Static("[bold green]q[/]: Sai do aplicativo", classes="help_line")
+            yield Label("Shortcuts", id="help_title")
+            yield Static("The footer lists global keys. These work on the table.", id="help_subtitle")
+            with Grid(id="help_grid"):
+                for key, desc in shortcuts:
+                    yield Static(key, classes="help_key")
+                    yield Static(desc, classes="help_desc")
             with Horizontal(id="btn_close_help"):
-                yield Button("Entendido (Esc)", id="btn_ok", variant="primary")
+                yield Button("Close", id="btn_ok", variant="primary")
 
     @on(Button.Pressed, "#btn_ok")
     def close_modal(self) -> None:
@@ -1073,139 +1088,184 @@ class HelpModal(ModalScreen[None]):
 
 
 # -----------------------------------------------------------------------------
-# Aplicação Principal TUI (FindFileApp)
+# Main Textual application
 # -----------------------------------------------------------------------------
 
 class FindFileApp(App):
-    """Aplicação TUI principal com Textual."""
+    """Main FindFile Textual application."""
 
-    TITLE = "⚡ FindFile - Busca Ultrarrápida de Arquivos e Conteúdo"
-    SUB_TITLE = "Multithread • Filtragem em tempo real • Prévia integrada"
+    TITLE = "FindFile"
+    SUB_TITLE = "Names and content  ·  parallel search  ·  preview"
+    COMMAND_PALETTE_BINDING = "ctrl+k"
 
     CSS = """
     Screen {
-        background: #181825;
+        background: #11111b;
         color: #cdd6f4;
+    }
+
+    Header {
+        background: #11111b;
+        color: #cdd6f4;
+    }
+
+    Footer {
+        background: #181825;
+        color: #a6adc8;
     }
 
     #search_panel {
         height: auto;
-        border: round #89b4fa;
+        border: solid #313244;
         background: #1e1e2e;
-        padding: 0 1;
-        margin: 0 1;
+        padding: 1 1 0 1;
+        margin: 1 1 0 1;
     }
 
-    .form_row {
+    .form_row, #options_row {
         height: auto;
         align: left middle;
-        margin-bottom: 0;
+        margin-bottom: 1;
     }
 
     .row_label {
-        width: 10;
+        width: 9;
         text-style: bold;
         color: #89b4fa;
-        padding-top: 1;
+        padding-right: 1;
     }
 
-    #input_query {
-        width: 1fr;
+    Input {
+        border: tall #45475a;
+        background: #11111b;
     }
 
-    #input_folder {
+    Input:focus {
+        border: tall #89b4fa;
+    }
+
+    #input_query, #input_folder {
         width: 1fr;
     }
 
     .btn_compact {
         margin-left: 1;
+        min-width: 10;
+    }
+
+    #btn_search {
         min-width: 12;
     }
 
-    #options_row {
-        height: auto;
-        align: left middle;
-        margin-top: 0;
-    }
-
     #options_row Checkbox {
-        margin-right: 2;
-    }
-
-    #action_row {
-        height: auto;
-        align: left middle;
-        margin-top: 0;
-        margin-bottom: 1;
+        margin-right: 1;
+        background: transparent;
+        width: auto;
     }
 
     #input_exts {
-        width: 25;
-        margin-right: 1;
+        width: 1fr;
     }
 
     #status_bar {
-        height: auto;
-        background: #24273a;
+        height: 1;
+        background: #181825;
         padding: 0 1;
-        margin: 0 1;
-        border: solid #45475a;
+        margin: 1 1 0 1;
         align: left middle;
     }
 
     #lbl_status {
         width: 1fr;
-        color: #cdd6f4;
-        text-style: bold;
+        color: #a6adc8;
     }
 
     .stat_pill {
-        background: #313244;
-        color: #a6e3a1;
         padding: 0 1;
         margin-left: 1;
         text-style: bold;
-        border: round #45475a;
+        background: #313244;
+        color: #cdd6f4;
+    }
+
+    #pill_matches {
+        color: #a6e3a1;
+    }
+
+    #pill_scanned {
+        color: #89b4fa;
+    }
+
+    #pill_time {
+        color: #f9e2af;
+    }
+
+    #pill_threads {
+        color: #cba6f7;
     }
 
     #progress_bar {
         width: 100%;
+        height: 1;
         margin: 0 1;
+        padding: 0;
         display: none;
+    }
+
+    #progress_bar Bar {
+        width: 100%;
     }
 
     #results_container {
         height: 1fr;
-        margin: 0 1;
-        border: round #45475a;
-        background: #181825;
+        margin: 0 1 0 1;
+        border: solid #313244;
+        background: #11111b;
     }
 
     #results_table {
         height: 100%;
+        background: #11111b;
+    }
+
+    #empty_hint {
+        dock: top;
+        height: 100%;
+        width: 100%;
+        content-align: center middle;
+        text-align: center;
+        color: #6c7086;
+        background: #11111b;
     }
 
     DataTable > .datatable--header {
-        background: #313244;
+        background: #181825;
         color: #89b4fa;
         text-style: bold;
     }
 
     DataTable > .datatable--cursor {
-        background: #45475a;
-        color: #ffffff;
-        text-style: bold;
+        background: #313244;
+        color: #cdd6f4;
+    }
+
+    DataTable > .datatable--even-row {
+        background: #181825;
+    }
+
+    DataTable > .datatable--odd-row {
+        background: #11111b;
     }
     """
 
     BINDINGS = [
-        Binding("ctrl+f", "focus_search", "Buscar", show=True),
-        Binding("ctrl+p", "open_folder_picker", "Pasta", show=True),
-        Binding("ctrl+l", "clear_results", "Limpar", show=True),
-        Binding("escape", "stop_or_unfocus", "Parar/Esc", show=True),
-        Binding("f1", "show_help", "Ajuda", show=True),
-        Binding("question_mark", "show_help", "Ajuda", show=False),
-        Binding("q", "quit_app", "Sair", show=True),
+        Binding("ctrl+f", "focus_search", "Search", show=True),
+        Binding("ctrl+p", "open_folder_picker", "Folder", show=True),
+        Binding("ctrl+l", "clear_results", "Clear", show=True),
+        Binding("escape", "stop_or_unfocus", "Stop", show=True),
+        Binding("f1", "show_help", "Help", show=True),
+        Binding("question_mark", "show_help", "Help", show=False),
+        Binding("q", "quit_app", "Quit", show=True),
     ]
 
     def __init__(
@@ -1239,82 +1299,80 @@ class FindFileApp(App):
         yield Header(show_clock=True)
 
         with Vertical(id="search_panel"):
-            # Linha de busca
             with Horizontal(classes="form_row"):
-                yield Label("🔍 Termo:", classes="row_label")
+                yield Label("Search", classes="row_label")
                 yield Input(
                     value=self.initial_query,
-                    placeholder="Digite o nome do arquivo, trecho de conteúdo ou regex...",
+                    placeholder="Name, text, or regular expression",
                     id="input_query",
                 )
+                yield Button("Search", id="btn_search", variant="primary", classes="btn_compact")
+                yield Button("Stop", id="btn_stop", variant="error", disabled=True, classes="btn_compact")
+                yield Button("Clear", id="btn_clear", variant="default", classes="btn_compact")
 
-            # Linha de pasta
             with Horizontal(classes="form_row"):
-                yield Label("📁 Pasta:", classes="row_label")
+                yield Label("Folder", classes="row_label")
                 yield Input(
                     value=self.initial_folder,
-                    placeholder="Caminho da pasta...",
+                    placeholder="Folder path",
                     id="input_folder",
                 )
-                yield Button("📂 Explorar", id="btn_browse", classes="btn_compact")
-                yield Button("📍 Atual", id="btn_cwd", classes="btn_compact")
+                yield Button("Browse", id="btn_browse", classes="btn_compact")
+                yield Button("Here", id="btn_cwd", classes="btn_compact")
 
-            # Linha de Opções (Checkboxes)
             with Horizontal(id="options_row"):
-                yield Label("⚙️ Opções:", classes="row_label")
-                yield Checkbox("No Nome", value=True, id="chk_name")
-                yield Checkbox("No Conteúdo (Grep)", value=self.initial_content, id="chk_content")
-                yield Checkbox("Case Sensitive", value=False, id="chk_case")
+                yield Label("Filters", classes="row_label")
+                yield Checkbox("Name", value=True, id="chk_name")
+                yield Checkbox("Text", value=self.initial_content, id="chk_content")
+                yield Checkbox("Case", value=False, id="chk_case")
                 yield Checkbox("Regex", value=self.initial_regex, id="chk_regex")
-                yield Checkbox("Ignorar Caches & .git", value=True, id="chk_ignore")
+                yield Checkbox("Skip cache", value=True, id="chk_ignore")
 
-            # Linha de Filtro de Extensão e Botões
-            with Horizontal(id="action_row"):
-                yield Label("📑 Extensões:", classes="row_label")
+            with Horizontal(classes="form_row"):
+                yield Label("Ext.", classes="row_label")
                 yield Input(
-                    placeholder="ex: py, js, txt (vazio = todas)",
+                    placeholder="py, js, txt  ·  empty matches every extension",
                     id="input_exts",
                 )
-                yield Button("🚀 BUSCAR (Enter)", id="btn_search", variant="primary")
-                yield Button("⏹️ PARAR (Esc)", id="btn_stop", variant="error", disabled=True)
-                yield Button("🧹 LIMPAR", id="btn_clear", variant="default")
 
-        # Barra de status e métricas ao vivo
         with Horizontal(id="status_bar"):
-            yield Label("Pronto para buscar.", id="lbl_status")
+            yield Label("Ready.", id="lbl_status")
             yield Label("0 matches", id="pill_matches", classes="stat_pill")
-            yield Label("0 escaneados", id="pill_scanned", classes="stat_pill")
+            yield Label("0 files", id="pill_scanned", classes="stat_pill")
             yield Label("0.0s", id="pill_time", classes="stat_pill")
             yield Label(f"{self.default_workers} threads", id="pill_threads", classes="stat_pill")
 
-        yield ProgressBar(id="progress_bar")
+        yield ProgressBar(id="progress_bar", show_eta=False, show_percentage=False)
 
-        # Tabela com os resultados
         with Container(id="results_container"):
-            table = DataTable(id="results_table", cursor_type="row")
-            yield table
+            yield Static(
+                "Type a term and press Enter.\n"
+                "In the table: Enter previews  ·  o opens  ·  f reveals  ·  c copies",
+                id="empty_hint",
+            )
+            yield DataTable(id="results_table", cursor_type="row", zebra_stripes=True)
 
         yield Footer()
 
     def on_mount(self) -> None:
-        """Inicializa colunas da tabela e foca no input de busca."""
+        """Set up table columns and focus the search field."""
         table = self.query_one("#results_table", DataTable)
         table.add_column("#", key="idx")
-        table.add_column("Tipo", key="type")
-        table.add_column("Arquivo", key="name")
-        table.add_column("Linha", key="line")
-        table.add_column("Ocorrência / Prévia", key="snippet")
-        table.add_column("Tamanho", key="size")
-        table.add_column("Caminho Relativo", key="rel_path")
+        table.add_column("Type", key="type")
+        table.add_column("File", key="name")
+        table.add_column("Line", key="line")
+        table.add_column("Match", key="snippet")
+        table.add_column("Size", key="size")
+        table.add_column("Relative path", key="rel_path")
 
-        # Se houver termo inicial passado via CLI, executa imediatamente
+        # A query passed on the command line starts a search immediately.
         if self.initial_query:
             self.start_search()
         else:
             self.query_one("#input_query", Input).focus()
 
     # -------------------------------------------------------------------------
-    # Gerenciamento de Ações e Cliques
+    # Actions and clicks
     # -------------------------------------------------------------------------
 
     @on(Button.Pressed, "#btn_browse")
@@ -1352,13 +1410,17 @@ class FindFileApp(App):
         self.results_map.clear()
         self._total_found = 0
         self._total_scanned = 0
-        self.query_one("#lbl_status", Label).update("Resultados limpos.")
+        self.query_one("#lbl_status", Label).update("Results cleared.")
         self.query_one("#pill_matches", Label).update("0 matches")
-        self.query_one("#pill_scanned", Label).update("0 escaneados")
+        self.query_one("#pill_scanned", Label).update("0 files")
         self.query_one("#pill_time", Label).update("0.0s")
+        self._show_empty(
+            "Type a term and press Enter.\n"
+            "In the table: Enter previews  ·  o opens  ·  f reveals  ·  c copies"
+        )
 
     # -------------------------------------------------------------------------
-    # Execução e Controle da Busca Multithread
+    # Search control
     # -------------------------------------------------------------------------
 
     def start_search(self) -> None:
@@ -1366,13 +1428,13 @@ class FindFileApp(App):
         folder = self.query_one("#input_folder", Input).value.strip()
 
         if not query:
-            self.notify("Por favor, digite um termo para buscar.", severity="warning")
+            self.notify("Enter a search term.", severity="warning")
             self.query_one("#input_query", Input).focus()
             return
 
         folder_path = Path(folder).expanduser().resolve()
         if not folder_path.is_dir():
-            self.notify(f"A pasta '{folder}' não existe ou é inválida.", severity="error")
+            self.notify(f"Folder '{folder}' does not exist.", severity="error")
             return
 
         search_name = self.query_one("#chk_name", Checkbox).value
@@ -1380,7 +1442,7 @@ class FindFileApp(App):
 
         if not search_name and not search_content:
             self.notify(
-                "Selecione ao menos uma opção: 'No Nome' ou 'No Conteúdo'.", severity="warning"
+                "Turn on Name, Text, or both.", severity="warning"
             )
             return
 
@@ -1392,10 +1454,10 @@ class FindFileApp(App):
             try:
                 re.compile(query)
             except re.error as err:
-                self.notify(f"Expressão regular inválida: {err}", severity="error")
+                self.notify(f"Invalid regular expression: {err}", severity="error")
                 return
 
-        # Parse extensões
+        # Parse extensions
         ext_raw = self.query_one("#input_exts", Input).value.strip()
         ext_set: Optional[Set[str]] = None
         if ext_raw:
@@ -1405,7 +1467,7 @@ class FindFileApp(App):
                 if e.strip().lstrip("*.")
             }
 
-        # Interrompe qualquer busca anterior em andamento e invalida callbacks antigos
+        # Stop any search already running and ignore its callbacks.
         self.stop_search()
         self._search_id += 1
         current_search_id = self._search_id
@@ -1414,21 +1476,22 @@ class FindFileApp(App):
         self._last_case_sensitive = case_sensitive
         self._last_use_regex = use_regex
 
-        # Limpa tabela e mapas
+        # Clear the table and the result map.
         table = self.query_one("#results_table", DataTable)
         table.clear()
         self.results_map.clear()
         self._total_found = 0
         self._total_scanned = 0
 
-        # Atualiza estado visual
+        # Update the visible state.
         self.is_searching = True
         self.query_one("#btn_search", Button).disabled = True
         self.query_one("#btn_stop", Button).disabled = False
-        self.query_one("#lbl_status", Label).update("⚡ Buscando arquivos...")
+        self.query_one("#lbl_status", Label).update("Searching…")
         self.query_one("#progress_bar", ProgressBar).styles.display = "block"
+        self._show_empty("Scanning the folder…")
 
-        # Dispara thread worker de busca
+        # Start the search worker.
         self.run_search_worker(
             search_id=current_search_id,
             root_dir=str(folder_path),
@@ -1454,7 +1517,7 @@ class FindFileApp(App):
         use_regex: bool,
         ext_filter: Optional[Set[str]],
     ) -> None:
-        """Executa o SearchEngine em thread em segundo plano."""
+        """Run SearchEngine on a background thread."""
 
         def on_batch_cb(batch: List[SearchResult]) -> None:
             self.call_from_thread(
@@ -1511,11 +1574,13 @@ class FindFileApp(App):
         case_sensitive: bool,
         use_regex: bool,
     ) -> None:
-        """Adiciona lote de resultados à tabela na thread principal do Textual."""
+        """Append a result batch to the table on the UI thread."""
         if search_id != self._search_id:
             return
 
         table = self.query_one("#results_table", DataTable)
+        if batch:
+            self._hide_empty()
 
         for res in batch:
             self.results_map[res.idx] = res
@@ -1530,9 +1595,9 @@ class FindFileApp(App):
         use_regex: bool,
     ) -> None:
         type_badge = (
-            Text("📝 Conteúdo", style="bold cyan")
+            Text("content", style="bold cyan")
             if res.match_type == "content"
-            else Text("📄 Nome", style="bold green")
+            else Text("name", style="bold green")
         )
 
         name_text = highlight_match(res.file_name, query, case_sensitive, use_regex)
@@ -1541,7 +1606,7 @@ class FindFileApp(App):
         snippet_text = (
             highlight_match(res.snippet, query, case_sensitive, use_regex)
             if res.snippet
-            else Text(f"Arquivo correspondente: {res.file_name}", style="dim")
+            else Text(f"Matching file: {res.file_name}", style="dim")
         )
 
         size_str = format_size(res.file_size)
@@ -1565,7 +1630,7 @@ class FindFileApp(App):
         elapsed: float,
         is_running: bool,
     ) -> None:
-        """Atualiza indicadores e contadores em tempo real."""
+        """Refresh the live counters."""
         if search_id != self._search_id:
             return
 
@@ -1573,14 +1638,12 @@ class FindFileApp(App):
         self._total_found = found
 
         self.query_one("#pill_matches", Label).update(f"{found} matches")
-        self.query_one("#pill_scanned", Label).update(f"{scanned} escaneados")
+        self.query_one("#pill_scanned", Label).update(f"{scanned} files")
         self.query_one("#pill_time", Label).update(f"{elapsed:.2f}s")
 
         if is_running:
             speed = int(scanned / max(0.01, elapsed))
-            self.query_one("#lbl_status", Label).update(
-                f"⚡ Buscando... ({speed:,} arquivos/s)".replace(",", ".")
-            )
+            self.query_one("#lbl_status", Label).update(f"Searching  ·  {speed:,} files/s")
 
     def _finish_search_ui(
         self,
@@ -1590,7 +1653,7 @@ class FindFileApp(App):
         found: int,
         elapsed: float,
     ) -> None:
-        """Finaliza a busca e reativa botões."""
+        """Finish the search and re-enable the buttons."""
         if search_id != self._search_id:
             return
 
@@ -1600,22 +1663,28 @@ class FindFileApp(App):
         self.query_one("#progress_bar", ProgressBar).styles.display = "none"
 
         if engine.limit_reached:
-            status_msg = f"⚠️ Limite de {engine.max_results:,} resultados atingido.".replace(",", ".")
+            status_msg = f"Stopped at the limit of {engine.max_results:,} matches."
         elif engine.is_stopped():
-            status_msg = "⏹️ Busca interrompida."
+            status_msg = "Search stopped."
         else:
-            status_msg = "✅ Busca concluída."
+            status_msg = "Search finished."
 
-        self.query_one("#lbl_status", Label).update(
-            f"{status_msg} Encontrados {found} resultado(s) em {scanned:,} arquivos ({elapsed:.2f}s).".replace(
-                ",", "."
-            )
-        )
+        self.query_one("#lbl_status", Label).update(status_msg)
+        if found == 0:
+            self._show_empty(f"No matches for “{escape(self._last_query)}”.")
         if self.current_engine is engine:
             self.current_engine = None
 
+    def _show_empty(self, message: str) -> None:
+        hint = self.query_one("#empty_hint", Static)
+        hint.update(message)
+        hint.display = True
+
+    def _hide_empty(self) -> None:
+        self.query_one("#empty_hint", Static).display = False
+
     def stop_search(self) -> None:
-        """Interrompe a busca atual se estiver em andamento."""
+        """Stop the search if one is running."""
         if self.current_engine:
             self.current_engine.stop()
         self.is_searching = False
@@ -1624,12 +1693,12 @@ class FindFileApp(App):
         self.query_one("#progress_bar", ProgressBar).styles.display = "none"
 
     # -------------------------------------------------------------------------
-    # Interações com a Tabela de Resultados (Seleção e Ordenação)
+    # Result table: selection and sorting
     # -------------------------------------------------------------------------
 
     @on(DataTable.HeaderSelected, "#results_table")
     def on_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        """Ordena os resultados ao clicar no cabeçalho de uma coluna."""
+        """Sort results when a column header is clicked."""
         if self.is_searching or not self.results_map:
             return
 
@@ -1664,7 +1733,7 @@ class FindFileApp(App):
 
     @on(DataTable.RowSelected, "#results_table")
     def on_result_selected(self, event: DataTable.RowSelected) -> None:
-        """Ao teclar Enter ou clicar duas vezes em uma linha, abre o modal de detalhes."""
+        """Enter or a double-click opens the preview."""
         try:
             row_key_val = int(str(event.row_key.value))
             result = self.results_map.get(row_key_val)
@@ -1674,7 +1743,7 @@ class FindFileApp(App):
             pass
 
     def get_selected_result(self) -> Optional[SearchResult]:
-        """Retorna o SearchResult correspondente à linha atualmente selecionada na tabela."""
+        """Return the SearchResult for the selected table row."""
         table = self.query_one("#results_table", DataTable)
         if table.row_count == 0:
             return None
@@ -1686,7 +1755,7 @@ class FindFileApp(App):
             return None
 
     def on_key(self, event) -> None:
-        """Processa atalhos de tecla única quando o foco não estiver em um campo de texto."""
+        """Handle single-key shortcuts when focus is not in a text field."""
         if isinstance(self.focused, Input):
             return
 
@@ -1698,22 +1767,22 @@ class FindFileApp(App):
             res = self.get_selected_result()
             if res:
                 open_file_in_system(res.file_path)
-                self.notify(f"Abrindo '{res.file_name}' no sistema...")
+                self.notify(f"Opening '{res.file_name}'…")
         elif char == "f":
             res = self.get_selected_result()
             if res:
                 reveal_in_file_manager(res.file_path)
-                self.notify(f"Revelando '{res.file_name}' no Finder...")
+                self.notify(f"Revealing '{res.file_name}'…")
         elif char == "c":
             res = self.get_selected_result()
             if res:
                 if copy_to_clipboard(res.file_path):
-                    self.notify("Caminho copiado para a área de transferência!")
+                    self.notify("Path copied to the clipboard.")
                 else:
-                    self.notify("Falha ao copiar caminho.", severity="warning")
+                    self.notify("Could not copy the path.", severity="warning")
 
     # -------------------------------------------------------------------------
-    # Atalhos Globais de Teclado
+    # Global keyboard shortcuts
     # -------------------------------------------------------------------------
 
     def action_focus_search(self) -> None:
@@ -1740,45 +1809,45 @@ class FindFileApp(App):
 
 
 # -----------------------------------------------------------------------------
-# Ponto de Entrada da Linha de Comando (CLI)
+# Command-line entry point
 # -----------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="FindFile - Busca Ultrarrápida de Arquivos e Conteúdo com TUI",
+        description="FindFile — fast terminal search for file names and file contents",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Exemplos de uso:
-  findfile.py                           # Abre na pasta atual
-  findfile.py ~/Documents               # Abre na pasta especificada
-  findfile.py ~/Projetos "config"       # Inicia buscando 'config' na pasta
-  findfile.py . "def main" -c           # Busca 'def main' no conteúdo dos arquivos
-  findfile.py . "def\\s+test_" -c -r    # Busca por expressão regular no conteúdo
+Examples:
+  findfile.py                           # Open in the current folder
+  findfile.py ~/Documents               # Open in a chosen folder
+  findfile.py ~/Projects "config"       # Search file names for 'config'
+  findfile.py . "def main" -c           # Search file contents for 'def main'
+  findfile.py . "def\\s+test_" -c -r    # Search file contents with a regex
         """,
     )
     parser.add_argument(
         "folder",
         nargs="?",
         default=".",
-        help="Pasta inicial para busca (padrão: diretório atual)",
+        help="Folder to search (default: current directory)",
     )
     parser.add_argument(
         "query",
         nargs="?",
         default="",
-        help="Termo inicial de busca (opcional)",
+        help="Initial search term (optional)",
     )
     parser.add_argument(
         "-c",
         "--content",
         action="store_true",
-        help="Ativa a busca no conteúdo dos arquivos (Grep) ao iniciar",
+        help="Also search inside file contents",
     )
     parser.add_argument(
         "-r",
         "--regex",
         action="store_true",
-        help="Ativa o modo de Expressão Regular (Regex) ao iniciar",
+        help="Treat the search term as a regular expression",
     )
 
     args = parser.parse_args()

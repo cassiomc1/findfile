@@ -1,131 +1,118 @@
-# ⚡ FindFile - Buscador Ultrarrápido de Arquivos e Conteúdo com TUI
+# FindFile
 
-Um utilitário de terminal interativo (TUI) moderno, responsivo e de alto desempenho para buscar arquivos pelo **nome** e/ou pelo **conteúdo** em modo **multithread**, desenvolvido com **Python 3** e **Textual/Rich**.
+A fast terminal UI for searching files by **name** and **content**. Written in Python 3 with Textual and Rich, and scanned with a thread pool.
 
----
+## Features
 
-## 🚀 Principais Funcionalidades
+- **Parallel search**
+  - Directory walk through `os.scandir`.
+  - Worker count scales with the CPU.
+  - One open per file: size, binary check, and content scan share a single descriptor. ASCII literals are matched on bytes; accented text and regular expressions use Unicode.
+  - Skips binaries (images, video, PDFs, executables, SQLite, and similar) and heavy caches (`.git`, `node_modules`, `.venv`, and similar).
+- **Interface**
+  - Dark layout: search, folder, filters, and a results table.
+  - Live highlight of the term or regular expression in file names and snippets.
+  - Sort by clicking a column header (`#`, `Type`, `File`, `Line`, `Match`, `Size`, `Relative path`).
+  - Results stream in batches, with a cap so the table cannot grow without limit.
+  - Live counts for matches, files scanned, elapsed time, threads, and files per second.
+  - Empty state before a search, and a clear message when nothing matches.
+- **Folder picker**
+  - Shortcuts: Home, Here, Docs, Downloads, and Up.
+  - Editable path, plus a directory tree.
+- **Search modes**
+  - **Name**: file names that contain the term (`*`, `?`, or a regular expression).
+  - **Text**: line number and snippet from inside the file.
+  - **Both**: name hits and content hits in one run.
+  - **Case**: optional case-sensitive matching, including accented UTF-8.
+  - **Extensions**: limit the scan (`py, js, ts, txt`). Leave it empty to search every extension.
+- **Preview**
+  - `Enter` on a row opens metadata and a syntax-highlighted preview, with the matching line marked.
+  - `o` opens the file in the default application.
+  - `f` reveals it in Finder or the system file manager.
+  - `c` copies the full path.
+  - `y` copies the matched line (preview only).
 
-- **⚡ Motor Multithread Ultrarrápido**:
-  - Varredura de diretórios em alta velocidade via chamadas C (`os.scandir`).
-  - Pool de threads com detecção de CPU para processamento paralelo simultâneo de arquivos.
-  - Leitura unificada por arquivo (`fstat` + detecção binária + conteúdo em uma única abertura de descritor), operando em nível de *bytes* para termos ASCII e *Unicode* completo para termos acentuados ou expressões regulares.
-  - Pula arquivos binários automaticamente (imagens, vídeos, PDFs, executáveis, sqlite, etc.) e caches pesados (`.git`, `node_modules`, `.venv`, etc.).
-- **🖥️ Interface TUI Moderna e Fluida**:
-  - Construída com Textual e paleta de cores escura moderna.
-  - Destaque em tempo real do termo ou expressão regular dentro dos nomes de arquivos e trechos de código.
-  - Ordenação interativa clicando nos cabeçalhos das colunas (`#`, `Tipo`, `Arquivo`, `Linha`, `Tamanho`, `Caminho Relativo`).
-  - Atualização progressiva dos resultados em lotes com proteção contra sobrecarga de linhas.
-  - Métricas ao vivo de arquivos verificados, resultados encontrados, tempo decorrido, threads ativas e velocidade (arquivos/s).
-- **📁 Seletor Visual de Pastas**:
-  - Modal interativo para navegar e escolher pastas com atalhos rápidos (`Home`, `Atual`, `Documentos`, `Downloads`, `Subir`).
-  - Campo editável para digitar ou colar qualquer caminho de diretório.
-- **🔍 Modos de Busca Flexíveis**:
-  - **No Nome do Arquivo**: Encontra arquivos cujo nome contenha o termo (com suporte a wildcards `*` e `?` ou Regex).
-  - **No Conteúdo (Grep)**: Varre o texto interno dos arquivos e exibe o número da linha e o trecho correspondente.
-  - **Ambos Simultaneamente**: Encontra tanto ocorrências no nome quanto dentro do código.
-  - **Expressão Regular (Regex)**: Suporte completo a padrões avançados de busca tanto no nome quanto no conteúdo.
-  - **Case Sensitive**: Diferenciação opcional de maiúsculas e minúsculas (incluindo suporte a caracteres acentuados UTF-8).
-  - **Filtro de Extensões**: Permite limitar a busca a extensões específicas (ex: `py, js, ts, txt`).
-- **📄 Prévia e Ações Rápidas de Arquivo**:
-  - Ao selecionar um resultado na tabela (`Enter`), abre um modal com metadados e **prévia do código com realce de sintaxe** e linha destacada.
-  - Ações diretas:
-    - `o`: Abrir o arquivo no aplicativo padrão do sistema.
-    - `f`: Revelar o arquivo no Finder (macOS) ou gerenciador de arquivos.
-    - `c`: Copiar o caminho completo para a área de transferência.
-    - `y`: Copiar o trecho da linha encontrada (no modal de prévia).
+## Install
 
----
+Python 3.9 or newer (tested through 3.14), on macOS or Linux.
 
-## 📦 Instalação
-
-### Pré-requisitos
-- Python 3.9+ (compatível com Python 3.10, 3.11, 3.12, 3.13 e 3.14)
-- macOS ou Linux
-
-### 1. Clonar o repositório
 ```bash
 git clone https://github.com/cassio/findfile.git
 cd findfile
-```
-
-### 2. Instalar dependências
-```bash
 pip install -r requirements.txt
 ```
-*(As dependências são apenas `textual` e `rich`)*
 
-### 3. Empacotar como Aplicativo macOS (FindFile.app)
-Você pode empacotar o FindFile como um aplicativo nativo (`FindFile.app`) diretamente na sua pasta de **Aplicativos** (`/Applications`), com ícone de alta resolução e comando global de terminal:
+Dependencies are `textual` and `rich`.
+
+### macOS app
+
+`build_app.sh` installs `FindFile.app` and a `findfile` command:
 
 ```bash
 chmod +x build_app.sh
 ./build_app.sh
 ```
 
-Isso irá:
-- Instalar `/Applications/FindFile.app` (visível no Finder, Launchpad, Spotlight `Cmd + Espaço` e Dock).
-- Criar o comando global `findfile` no seu terminal (`~/.local/bin/findfile`), permitindo rodar `findfile` diretamente de qualquer pasta.
+That places the app in `/Applications` (Finder, Launchpad, Spotlight, and the Dock) and installs `~/.local/bin/findfile`.
 
----
+```bash
+./build_app.sh --user      # ~/Applications instead
+./build_app.sh --no-cli    # skip the terminal command
+./build_app.sh --target /path/to/FindFile.app
+```
 
-## 🎮 Como Usar
-
-### Execução Básica
-Basta executar o script diretamente no terminal:
+## Use
 
 ```bash
 python3 findfile.py
 ```
-ou torne-o executável e rode:
+
+Or:
+
 ```bash
 chmod +x findfile.py
 ./findfile.py
 ```
 
-### Parâmetros de Linha de Comando (Opcionais)
-Você pode abrir o FindFile já apontando para um diretório e até com um termo e flags pré-configurados:
+Optional arguments open the UI already pointed at a folder, a term, or both:
 
 ```bash
-# Abrir apontando para a pasta Documentos
 python3 findfile.py ~/Documents
-
-# Abrir na pasta de projetos já buscando "database" no nome
-python3 findfile.py ~/Projetos "database"
-
-# Buscar "def main" diretamente no conteúdo dos arquivos (-c / --content)
-python3 findfile.py ~/Projetos "def main" -c
-
-# Buscar usando Expressão Regular no conteúdo (-c -r)
-python3 findfile.py ~/Projetos "def\s+test_\w+" -c -r
+python3 findfile.py ~/Projects "database"
+python3 findfile.py ~/Projects "def main" -c
+python3 findfile.py ~/Projects "def\s+test_\w+" -c -r
 ```
 
----
-
-## ⌨️ Atalhos de Teclado
-
-| Tecla | Ação |
+| Flag | Meaning |
 | :--- | :--- |
-| **`Enter`** (nos inputs) | Dispara a busca imediatamente |
-| **`Esc`** | Cancela busca em andamento ou fecha modais abertos |
-| **`Enter` / Clique Duplo** (na tabela) | Abre a prévia do arquivo com código colorido e linha destacada |
-| **Clique no Cabeçalho** (na tabela) | Ordena os resultados pela coluna clicada (alterna crescente/decrescente) |
-| **`Ctrl + F`** ou **`/`** | Foca no campo de busca de texto |
-| **`Ctrl + P`** | Abre o modal de seleção visual de pastas |
-| **`Ctrl + L`** | Limpa a lista de resultados e contadores |
-| **`o`** (na tabela ou prévia) | Abre o arquivo no aplicativo padrão do sistema |
-| **`f`** (na tabela ou prévia) | Revela o arquivo no Finder |
-| **`c`** (na tabela ou prévia) | Copia o caminho absoluto do arquivo para o clipboard |
-| **`y`** (na prévia) | Copia o trecho de código da linha encontrada |
-| **`F1`** ou **`?`** | Exibe a tela de ajuda com todos os atalhos |
-| **`q`** | Encerra o aplicativo |
+| `folder` | Folder to search. Default: current directory. |
+| `query` | Term to search as soon as the UI opens. |
+| `-c`, `--content` | Also search inside files. |
+| `-r`, `--regex` | Treat the term as a regular expression. |
 
----
+## Keyboard
 
-## 🧪 Testes Automatizados
+| Key | Action |
+| :--- | :--- |
+| `Enter` in a field | Start the search |
+| `Esc` | Stop a running search, or close a dialog |
+| `Enter` or double-click on a row | Open the preview |
+| Column header | Sort by that column |
+| `Ctrl+F` or `/` | Focus the search field |
+| `Ctrl+P` | Open the folder picker |
+| `Ctrl+K` | Open the command palette |
+| `Ctrl+L` | Clear results and counters |
+| `o` | Open the file in the default app |
+| `f` | Reveal the file in Finder |
+| `c` | Copy the absolute path |
+| `y` | Copy the matched snippet (preview) |
+| `F1` or `?` | Help |
+| `q` | Quit |
 
-O projeto inclui uma suíte completa de testes unitários que valida a busca por nome, busca por conteúdo multithread, acentuação UTF-8, expressões regulares, case-sensitivity, filtros de extensão, limite de resultados e cancelamento por token:
+## Tests
 
 ```bash
 python3 test_findfile.py
 ```
+
+The suite covers name search, multithreaded content search, UTF-8 accents, regular expressions, case sensitivity, extension filters, the result cap, and cancellation.

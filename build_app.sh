@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ⚡ FindFile - Script de Empacotamento e Instalação para macOS
-# Cria o FindFile.app em /Applications com ícone e atalho CLI no Terminal
+# FindFile — package and install the macOS app.
+# Creates FindFile.app and a terminal command.
 # ==============================================================================
 
 set -euo pipefail
@@ -15,14 +15,14 @@ INSTALL_CLI=true
 
 usage() {
     cat <<EOF
-Uso: $0 [opções]
+Usage: $0 [options]
 
-Opções:
-  --system           Instala em /Applications (padrão)
-  --user             Instala em ~/Applications (pasta de usuário)
-  --target PATH      Caminho personalizado de destino para o .app
-  --no-cli           Não instala o atalho 'findfile' na linha de comando
-  -h, --help         Exibe esta ajuda
+Options:
+  --system           Install to /Applications (default)
+  --user             Install to ~/Applications
+  --target PATH      Custom destination for the .app bundle
+  --no-cli           Do not install the 'findfile' terminal command
+  -h, --help         Show this help
 EOF
     exit 0
 }
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --target)
-            [[ -n "${2:-}" ]] || { echo "Erro: --target requer um caminho"; exit 1; }
+            [[ -n "${2:-}" ]] || { echo "Error: --target requires a path"; exit 1; }
             TARGET_APP="$2"
             shift 2
             ;;
@@ -50,32 +50,32 @@ while [[ $# -gt 0 ]]; do
             usage
             ;;
         *)
-            echo "Opção desconhecida: $1"
+            echo "Unknown option: $1"
             usage
             ;;
     esac
 done
 
-echo "🚀 Iniciando empacotamento do FindFile..."
-echo "📦 Destino do Aplicativo: $TARGET_APP"
+echo "Packaging FindFile..."
+echo "App destination: $TARGET_APP"
 
-# 1. Garantir que o ícone exista
+# 1. Make sure the icon exists
 ICON_PATH="$SCRIPT_DIR/assets/AppIcon.icns"
 if [[ ! -f "$ICON_PATH" ]]; then
-    echo "🎨 Gerando ícone de alta resolução (AppIcon.icns)..."
+    echo "Generating AppIcon.icns..."
     python3 "$SCRIPT_DIR/scripts/generate_icon.py" "$ICON_PATH"
 fi
 
-# 2. Criar estrutura de pastas do bundle .app
+# 2. Create the .app bundle directories
 CONTENTS_DIR="$TARGET_APP/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
-echo "📁 Criando diretórios do bundle..."
+echo "Creating bundle directories..."
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-# 3. Gerar Info.plist
-echo "📝 Gerando Info.plist..."
+# 3. Write Info.plist
+echo "Writing Info.plist..."
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -112,20 +112,20 @@ EOF
 # PkgInfo
 echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"
 
-# 4. Copiar ícone e arquivos do projeto
-echo "📄 Copiando recursos..."
+# 4. Copy the icon and project files
+echo "Copying resources..."
 cp "$ICON_PATH" "$RESOURCES_DIR/AppIcon.icns"
 cp "$SCRIPT_DIR/findfile.py" "$RESOURCES_DIR/findfile.py"
 cp "$SCRIPT_DIR/requirements.txt" "$RESOURCES_DIR/requirements.txt"
 
-# 5. Criar o launcher de execução no Terminal (Contents/Resources/findfile.command)
+# 5. Terminal launcher (Contents/Resources/findfile.command)
 cat << 'EOF' > "$RESOURCES_DIR/findfile.command"
 #!/usr/bin/env bash
 # ⚡ FindFile Terminal Runner
 
 printf "\033]0;%s\007" "⚡ FindFile"
 
-# Inicia na pasta do usuário se nenhum argumento foi passado
+# Start in the home folder when no arguments were passed.
 if [ $# -eq 0 ]; then
     cd "$HOME" || exit 1
 fi
@@ -135,7 +135,7 @@ TARGET_PY="$APP_DIR/findfile.py"
 
 find_python() {
     local candidates=()
-    # Prioriza Python.framework (mais recente primeiro), Homebrew e ambiente ativo
+    # Prefer Python.framework (newest first), then Homebrew and the active environment.
     while IFS= read -r p; do
         candidates+=("$p")
     done < <(ls -1r /Library/Frameworks/Python.framework/Versions/*/bin/python3 2>/dev/null || true)
@@ -161,14 +161,14 @@ find_python() {
 PY_EXEC="$(find_python || true)"
 
 if [ -z "$PY_EXEC" ]; then
-    echo "⚠️ Python com as dependências 'textual' e 'rich' não foi encontrado."
-    echo "Instalando dependências..."
+    echo "Python with 'textual' and 'rich' was not found."
+    echo "Installing dependencies..."
     if command -v pip3 >/dev/null 2>&1; then
         pip3 install -r "$APP_DIR/requirements.txt"
         PY_EXEC="$(find_python || command -v python3)"
     else
-        echo "Por favor instale o Python 3 e execute: pip3 install textual rich"
-        read -r -p "Pressione Enter para fechar..."
+        echo "Install Python 3, then run: pip3 install textual rich"
+        read -r -p "Press Enter to close..."
         exit 1
     fi
 fi
@@ -180,7 +180,7 @@ exit $EXIT_CODE
 EOF
 chmod +x "$RESOURCES_DIR/findfile.command"
 
-# 6. Criar o executável principal do bundle macOS (Contents/MacOS/FindFile)
+# 6. Bundle executable (Contents/MacOS/FindFile)
 cat << 'EOF' > "$MACOS_DIR/FindFile"
 #!/usr/bin/env bash
 # ⚡ FindFile macOS App Entrypoint
@@ -188,20 +188,20 @@ cat << 'EOF' > "$MACOS_DIR/FindFile"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RESOURCES="$DIR/Resources"
 
-# Abre a janela do Terminal de forma nativa via LaunchServices
+# Open a Terminal window through Launch Services.
 open -a Terminal "$RESOURCES/findfile.command"
 EOF
 chmod +x "$MACOS_DIR/FindFile"
 
-# 7. Notificar o sistema macOS (touch e lsregister)
+# 7. Register the app with Launch Services
 touch "$TARGET_APP"
 if [[ -x "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" ]]; then
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET_APP" 2>/dev/null || true
 fi
 
-echo "✅ Aplicativo instalado com sucesso em: $TARGET_APP"
+echo "App installed at: $TARGET_APP"
 
-# 8. Instalar atalho de linha de comando CLI (findfile)
+# 8. Install the findfile terminal command
 if [[ "$INSTALL_CLI" == true ]]; then
     CLI_BIN_DIR="$HOME/.local/bin"
     mkdir -p "$CLI_BIN_DIR"
@@ -235,11 +235,11 @@ fi
 exec "\$PY_EXEC" "\$APP_PY" "\$@"
 EOF
     chmod +x "$CLI_PATH"
-    echo "✅ Comando CLI instalado em: $CLI_PATH"
+    echo "Terminal command installed at: $CLI_PATH"
 fi
 
 echo ""
-echo "🎉 Tudo pronto!"
-echo "   - Para abrir via interface: Vá em Aplicativos > FindFile (ou abra pelo Spotlight / Launchpad)"
-echo "   - Para abrir via terminal: Digite 'findfile' em qualquer pasta"
+echo "Done."
+echo "   - App: Applications > FindFile, or Spotlight / Launchpad"
+echo "   - Terminal: run 'findfile' from any folder"
 echo ""
