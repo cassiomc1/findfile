@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gera o ícone AppIcon.icns para o FindFile no formato padrão do macOS (Squircle com alta resolução).
+Build the high-resolution macOS AppIcon.icns for FindFile.
 """
 
 import math
@@ -15,10 +15,10 @@ from PIL import Image, ImageDraw
 def generate_icon(output_icns: Path) -> None:
     SIZE = 1024
     
-    # 1. Base image com transparência
+    # 1. Transparent base image
     canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
 
-    # 2. Gradiente elegante e moderno de fundo (Dark Slate / Deep Navy)
+    # 2. Dark slate / deep navy background gradient
     bg = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     for y in range(SIZE):
         for x in range(SIZE):
@@ -28,8 +28,8 @@ def generate_icon(output_icns: Path) -> None:
             b = int(46 * (1 - factor) + 22 * factor)
             bg.putpixel((x, y), (r, g, b, 255))
 
-    # 3. Máscara Squircle padrão do macOS
-    # Raio e proporções aproximados da Apple para ícones 1024x1024
+    # 3. macOS squircle mask
+    # Radius and proportions close to a 1024x1024 Apple icon
     mask = Image.new("L", (SIZE, SIZE), 0)
     mask_draw = ImageDraw.Draw(mask)
     margin = 82
@@ -39,11 +39,11 @@ def generate_icon(output_icns: Path) -> None:
         fill=255,
     )
 
-    # 4. Aplica a máscara no fundo
+    # 4. Apply the mask to the background
     base = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     base.paste(bg, (0, 0), mask)
 
-    # 5. Borda sutil de destaque (inner stroke)
+    # 5. Subtle inner stroke
     border_draw = ImageDraw.Draw(base)
     border_draw.rounded_rectangle(
         [margin, margin, SIZE - margin, SIZE - margin],
@@ -54,25 +54,25 @@ def generate_icon(output_icns: Path) -> None:
 
     draw = ImageDraw.Draw(base)
 
-    # 6. Símbolo: Lupa de Busca Estilizada com Raio Elétrico Central
+    # 6. Magnifying glass with a lightning bolt
     cx, cy = 470, 470
     radius = 175
     ring_width = 32
 
-    # Brilho sutil interno da lente
+    # Soft inner glow of the lens
     draw.ellipse(
         [cx - radius + 14, cy - radius + 14, cx + radius - 14, cy + radius - 14],
         fill=(14, 45, 78, 140),
     )
 
-    # Anel externo da lente (Azul Elétrico / Ciano Neon)
+    # Outer lens ring (electric blue / neon cyan)
     draw.ellipse(
         [cx - radius, cy - radius, cx + radius, cy + radius],
         outline=(0, 210, 255, 255),
         width=ring_width,
     )
 
-    # Cabo da lente a 45 graus
+    # Handle at 45 degrees
     angle = math.radians(45)
     h_start_x = cx + int((radius - 4) * math.cos(angle))
     h_start_y = cy + int((radius - 4) * math.sin(angle))
@@ -84,14 +84,14 @@ def generate_icon(output_icns: Path) -> None:
         fill=(0, 210, 255, 255),
         width=ring_width,
     )
-    # Ponta arredondada do cabo
+    # Rounded end of the handle
     half_w = ring_width // 2
     draw.ellipse(
         [h_end_x - half_w, h_end_y - half_w, h_end_x + half_w, h_end_y + half_w],
         fill=(0, 210, 255, 255),
     )
 
-    # Raio Dourado (Símbolo de Alta Velocidade)
+    # Gold bolt
     bolt_points = [
         (cx + 8, cy - 95),
         (cx - 52, cy - 8),
@@ -102,7 +102,7 @@ def generate_icon(output_icns: Path) -> None:
     ]
     draw.polygon(bolt_points, fill=(255, 215, 0, 255))
 
-    # 7. Gera o diretório .iconset com todas as resoluções exigidas pelo macOS
+    # 7. Build the .iconset at the sizes macOS expects
     iconset_dir = output_icns.parent / f"{output_icns.stem}.iconset"
     if iconset_dir.exists():
         shutil.rmtree(iconset_dir)
@@ -122,13 +122,13 @@ def generate_icon(output_icns: Path) -> None:
         filename = f"icon_{s}x{s}@2x.png" if scale == 2 else f"icon_{s}x{s}.png"
         resized.save(iconset_dir / filename)
 
-    # 8. Executa iconutil do macOS para compilar o .icns
+    # 8. Compile the .icns with iconutil
     cmd = ["iconutil", "-c", "icns", str(iconset_dir), "-o", str(output_icns)]
     subprocess.run(cmd, check=True)
 
-    # Limpeza do diretório temporário .iconset
+    # Remove the temporary .iconset directory
     shutil.rmtree(iconset_dir)
-    print(f"✅ Ícone gerado com sucesso: {output_icns}")
+    print(f"Icon written: {output_icns}")
 
 
 if __name__ == "__main__":

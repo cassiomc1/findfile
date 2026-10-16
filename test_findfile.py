@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Testes automatizados para o motor multithread SearchEngine e utilitários.
+Tests for the multithreaded SearchEngine and helpers.
 """
 
 import os
@@ -10,7 +10,7 @@ from findfile import SearchEngine, highlight_match, format_size, is_binary_file
 
 def test_search_engine():
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Cria arquivos de teste
+        # Create test files. Accented contents below exercise Unicode matching.
         file1 = os.path.join(tmpdir, "config_prod.json")
         file2 = os.path.join(tmpdir, "readme.txt")
         file3 = os.path.join(tmpdir, "app_worker.py")
@@ -38,9 +38,9 @@ def test_search_engine():
         with open(bin_file, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR api_key")
 
-        print("Arquivos de teste criados com sucesso.")
+        print("Test files created.")
 
-        # Teste 1: Busca apenas por nome
+        # Test 1: name only
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -50,11 +50,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        assert found == 1, f"Esperado 1 match por nome, obteve {found}"
+        assert found == 1, f"Expected 1 name match, got {found}"
         assert results[0].file_name == "config_prod.json"
-        print(f"✅ Teste 1 (Busca por nome): {found} match(es) em {elapsed*1000:.2f}ms")
+        print(f"Test 1 (name search): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 2: Busca por conteúdo (grep multithread) ignorando binário
+        # Test 2: multithreaded content search, skipping binaries
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -64,11 +64,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        # api_key está em file1, file2 e file4 (bin_file deve ser ignorado)
-        assert found == 3, f"Esperado 3 matches de conteúdo, obteve {found}"
-        print(f"✅ Teste 2 (Busca por conteúdo multithread): {found} match(es) em {elapsed*1000:.2f}ms")
+        # api_key is in file1, file2, and file4 (bin_file must be skipped)
+        assert found == 3, f"Expected 3 content matches, got {found}"
+        print(f"Test 2 (multithreaded content search): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 3: Busca case-sensitive
+        # Test 3: case-sensitive search
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -79,11 +79,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        assert found == 1, f"Esperado 1 match case-sensitive, obteve {found}"
+        assert found == 1, f"Expected 1 case-sensitive match, got {found}"
         assert "secret_key.env" in results[0].file_path
-        print(f"✅ Teste 3 (Case-sensitive): {found} match(es) em {elapsed*1000:.2f}ms")
+        print(f"Test 3 (case-sensitive): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 4: Busca com filtro de extensão
+        # Test 4: extension filter
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -94,11 +94,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        assert found == 1, f"Esperado 1 match com filtro .json, obteve {found}"
+        assert found == 1, f"Expected 1 match with the .json filter, got {found}"
         assert results[0].file_name == "config_prod.json"
-        print(f"✅ Teste 4 (Filtro de extensão): {found} match(es) em {elapsed*1000:.2f}ms")
+        print(f"Test 4 (extension filter): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 5: Busca por nome E conteúdo simultaneamente
+        # Test 5: name and content together
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -108,11 +108,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        # "config" está no nome de file1, no conteúdo de file2 ("Configure") e em file5 ("CONFIGURAÇÃO")
-        assert found == 3, f"Esperado 3 matches (nome e conteúdo), obteve {found}"
-        print(f"✅ Teste 5 (Nome + Conteúdo simultâneo): {found} match(es) em {elapsed*1000:.2f}ms")
+        # "config" is in file1's name, file2's content ("Configure"), and file5 ("CONFIGURAÇÃO")
+        assert found == 3, f"Expected 3 matches (name and content), got {found}"
+        print(f"Test 5 (name and content together): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 6: Busca case-insensitive com acentuação UTF-8 (Unicode)
+        # Test 6: case-insensitive accented UTF-8
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -123,11 +123,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        assert found == 1, f"Esperado 1 match Unicode para 'configuração', obteve {found}"
+        assert found == 1, f"Expected 1 Unicode match for 'configuração', got {found}"
         assert results[0].file_name == "relatorio_ação.md"
-        print(f"✅ Teste 6 (Busca Unicode acentuada case-insensitive): {found} match(es) em {elapsed*1000:.2f}ms")
+        print(f"Test 6 (case-insensitive accented Unicode): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 7: Busca por Expressão Regular (Regex)
+        # Test 7: regular expression
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -138,11 +138,11 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        assert found == 1, f"Esperado 1 match por Regex, obteve {found}"
+        assert found == 1, f"Expected 1 regex match, got {found}"
         assert results[0].file_name == "app_worker.py"
-        print(f"✅ Teste 7 (Busca por Expressão Regular): {found} match(es) em {elapsed*1000:.2f}ms")
+        print(f"Test 7 (regular expression): {found} match(es) in {elapsed*1000:.2f}ms")
 
-        # Teste 8: Limite máximo de resultados (max_results)
+        # Test 8: max_results cap
         results = []
         engine = SearchEngine(
             root_dir=tmpdir,
@@ -153,10 +153,10 @@ def test_search_engine():
             on_batch=lambda batch: results.extend(batch),
         )
         scanned, found, elapsed = engine.run()
-        assert found == 2 and engine.limit_reached, f"Esperado 2 matches com limit_reached=True, obteve {found}"
-        print(f"✅ Teste 8 (Proteção max_results): OK ({found} matches)")
+        assert found == 2 and engine.limit_reached, f"Expected 2 matches with limit_reached=True, got {found}"
+        print(f"Test 8 (max_results cap): OK ({found} matches)")
 
-        # Teste 9: Cancelamento imediato
+        # Test 9: immediate cancellation
         engine = SearchEngine(
             root_dir=tmpdir,
             query="test",
@@ -166,7 +166,7 @@ def test_search_engine():
         engine.stop()
         scanned, found, elapsed = engine.run()
         assert engine.is_stopped()
-        print("✅ Teste 9 (Interrupção imediata stop_event): OK")
+        print("Test 9 (immediate stop): OK")
 
 
 def test_helpers():
@@ -179,10 +179,10 @@ def test_helpers():
 
     highlighted_regex = highlight_match("worker_123.py", r"worker_\d+", use_regex=True)
     assert len(highlighted_regex.spans) == 1
-    print("✅ Teste 10 (Utilitários, highlight literal e regex): OK")
+    print("Test 10 (helpers, literal and regex highlight): OK")
 
 
 if __name__ == "__main__":
     test_search_engine()
     test_helpers()
-    print("\n🎉 Todos os testes passaram com sucesso!")
+    print("\nAll tests passed.")
