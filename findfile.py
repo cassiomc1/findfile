@@ -98,13 +98,13 @@ BINARY_SNIFF_BYTES = 4096
 
 
 # -----------------------------------------------------------------------------
-# Estruturas de Dados
+# Data Structures
 # -----------------------------------------------------------------------------
 
 @dataclass
 class SearchResult:
     idx: int
-    match_type: str  # 'name' ou 'content'
+    match_type: str  # 'name' or 'content'
     file_path: str
     file_name: str
     rel_path: str
@@ -395,7 +395,7 @@ class SearchEngine:
                 t.start()
                 workers.append(t)
 
-        # Thread principal de travessia do sistema de arquivos
+        # Main filesystem traversal thread
         try:
             self._crawl_filesystem(file_queue, result_queue, query_str)
         finally:
@@ -480,7 +480,7 @@ class SearchEngine:
                             stack.append(entry.path)
                             continue
 
-                        # Se for arquivo
+                        # Skip if not a regular file.
                         if not entry.is_file(follow_symlinks=False):
                             continue
 
