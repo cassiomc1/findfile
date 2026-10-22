@@ -1285,6 +1285,7 @@ class FindFileApp(App):
         self.default_workers = min(32, cpu_count * 4)
 
         self.current_engine: Optional[SearchEngine] = None
+        self._user_stopped = False
         self.results_map: dict[int, SearchResult] = {}
         self.is_searching = False
         self._search_id = 0
@@ -1471,6 +1472,7 @@ class FindFileApp(App):
         self.stop_search()
         self._search_id += 1
         current_search_id = self._search_id
+        self._user_stopped = False
 
         self._last_query = query
         self._last_case_sensitive = case_sensitive
@@ -1491,38 +1493,10 @@ class FindFileApp(App):
         self.query_one("#progress_bar", ProgressBar).styles.display = "block"
         self._show_empty("Scanning the folder…")
 
-        # Start the search worker.
-        self.run_search_worker(
-            search_id=current_search_id,
-            root_dir=str(folder_path),
-            query=query,
-            search_name=search_name,
-            search_content=search_content,
-            case_sensitive=case_sensitive,
-            ignore_caches=ignore_caches,
-            use_regex=use_regex,
-            ext_filter=ext_set,
-        )
-
-    @work(thread=True, exclusive=True)
-    def run_search_worker(
-        self,
-        search_id: int,
-        root_dir: str,
-        query: str,
-        search_name: bool,
-        search_content: bool,
-        case_sensitive: bool,
-        ignore_caches: bool,
-        use_regex: bool,
-        ext_filter: Optional[Set[str]],
-    ) -> None:
-        """Run SearchEngine on a background thread."""
-
         def on_batch_cb(batch: List[SearchResult]) -> None:
             self.call_from_thread(
                 self._add_results_batch,
-                search_id,
+                current_search_id,
                 batch,
                 query,
                 case_sensitive,
@@ -1532,27 +1506,39 @@ class FindFileApp(App):
         def on_progress_cb(scanned: int, found: int, elapsed: float, is_running: bool) -> None:
             self.call_from_thread(
                 self._update_progress_ui,
-                search_id,
+                current_search_id,
                 scanned,
                 found,
                 elapsed,
                 is_running,
             )
 
+        # Create the engine on the UI thread and register it BEFORE the
+        # worker starts, so a Stop pressed early can always reach it.
         engine = SearchEngine(
-            root_dir=root_dir,
+            root_dir=str(folder_path),
             query=query,
             search_name=search_name,
             search_content=search_content,
             case_sensitive=case_sensitive,
             ignore_caches=ignore_caches,
             use_regex=use_regex,
-            ext_filter=ext_filter,
+            ext_filter=ext_set,
             on_batch=on_batch_cb,
             on_progress=on_progress_cb,
         )
         self.current_engine = engine
 
+        # Start the search worker.
+        self.run_search_worker(engine=engine, search_id=current_search_id)
+
+    @work(thread=True, exclusive=True)
+    def run_search_worker(
+        self,
+        engine: SearchEngine,
+        search_id: int,
+    ) -> None:
+        """Run the search engine on a background thread."""
         scanned, found, elapsed = 0, 0, 0.0
         try:
             scanned, found, elapsed = engine.run()
@@ -1637,11 +1623,15 @@ class FindFileApp(App):
         self._total_scanned = scanned
         self._total_found = found
 
+        if not is_running:
+            return
+
         self.query_one("#pill_matches", Label).update(f"{found} matches")
         self.query_one("#pill_scanned", Label).update(f"{scanned} files")
         self.query_one("#pill_time", Label).update(f"{elapsed:.2f}s")
 
-        if is_running:
+        # A user stop freezes the final counters — never repaint "Searching".
+        if is_running and not self._user_stopped:
             speed = int(scanned / max(0.01, elapsed))
             self.query_one("#lbl_status", Label).update(f"Searching  ·  {speed:,} files/s")
 
@@ -1687,6 +1677,7 @@ class FindFileApp(App):
         """Stop the search if one is running."""
         if self.current_engine:
             self.current_engine.stop()
+        self._user_stopped = True
         self.is_searching = False
         self.query_one("#btn_search", Button).disabled = False
         self.query_one("#btn_stop", Button).disabled = True
