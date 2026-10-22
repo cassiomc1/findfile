@@ -1718,9 +1718,6 @@ class FindFileApp(App):
         self._total_scanned = scanned
         self._total_found = found
 
-        if not is_running:
-            return
-
         self.query_one("#pill_matches", Label).update(f"{found} matches")
         self.query_one("#pill_scanned", Label).update(f"{scanned} files")
         self.query_one("#pill_time", Label).update(f"{elapsed:.2f}s")

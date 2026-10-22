@@ -2,6 +2,10 @@
 
 A fast terminal UI for searching files by **name** and **content**. Written in Python 3 with Textual and Rich, and scanned with a thread pool.
 
+## Screenshot
+
+![FindFile green-phosphor mainframe terminal](assets/screenshot.png)
+
 ## Features
 
 - **Parallel search**
@@ -10,7 +14,8 @@ A fast terminal UI for searching files by **name** and **content**. Written in P
   - One open per file: size, binary check, and content scan share a single descriptor. ASCII literals are matched on bytes; accented text and regular expressions use Unicode.
   - Skips binaries (images, video, PDFs, executables, SQLite, and similar) and heavy caches (`.git`, `node_modules`, `.venv`, and similar).
 - **Interface**
-  - Dark layout: search, folder, filters, and a results table.
+  - Green-phosphor mainframe look: near-black screen, phosphor green text, and amber accents.
+  - Search, folder, filters, and a results table.
   - Live highlight of the term or regular expression in file names and snippets.
   - Sort by clicking a column header (`#`, `Type`, `File`, `Line`, `Match`, `Size`, `Relative path`).
   - Results stream in batches, with a cap so the table cannot grow without limit.
@@ -37,7 +42,7 @@ A fast terminal UI for searching files by **name** and **content**. Written in P
 Python 3.9 or newer (tested through 3.14), on macOS or Linux.
 
 ```bash
-git clone https://github.com/cassio/findfile.git
+git clone https://github.com/cassiomc1/findfile.git
 cd findfile
 pip install -r requirements.txt
 ```
