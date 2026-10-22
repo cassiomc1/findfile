@@ -244,7 +244,7 @@ def highlight_match(
                 continue
             if start > last_idx:
                 rich_text.append(text[last_idx:start])
-            rich_text.append(text[start:end], style="bold black on #f1c40f")
+            rich_text.append(text[start:end], style="bold black on #33ff33")
             last_idx = end
 
         if last_idx < len(text):
@@ -696,26 +696,25 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
     DEFAULT_CSS = """
     FolderPickerModal {
         align: center middle;
-        background: rgba(17, 17, 27, 0.82);
+        background: rgba(2, 4, 2, 0.88);
     }
 
     #folder_dialog {
         width: 86%;
         max-width: 96;
         height: 84%;
-        border: solid #89b4fa;
-        background: #1e1e2e;
+        border: double #33ff33;
+        background: #070a04;
         padding: 1 2;
     }
 
     #folder_title {
         text-style: bold;
-        color: #cdd6f4;
-        text-align: left;
+        color: #7dffa8;
     }
 
     #folder_subtitle {
-        color: #6c7086;
+        color: #1d7d2f;
         margin-bottom: 1;
     }
 
@@ -728,17 +727,40 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
     #quick_paths Button {
         margin: 0 1 0 0;
         min-width: 12;
+        background: #0b1406;
+        color: #33ff33;
+        border: tall #1d7d2f;
+        text-style: bold;
+    }
+
+    #quick_paths Button:hover {
+        background: #14300d;
+        color: #7dffa8;
+        border: tall #33ff33;
     }
 
     #modal_folder_input {
         margin-bottom: 1;
+        border: tall #1d7d2f;
+        background: #020402;
+        color: #33ff33;
+    }
+
+    #modal_folder_input:focus {
+        border: tall #7dffa8;
     }
 
     #folder_tree {
         height: 1fr;
-        border: solid #45475a;
-        background: #11111b;
+        border: double #1d7d2f;
+        background: #020402;
         margin-bottom: 1;
+    }
+
+    #folder_tree .tree--cursor,
+    #folder_tree .tree--highlight {
+        background: #12330d;
+        color: #7dffa8;
     }
 
     #modal_actions {
@@ -748,6 +770,16 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
 
     #modal_actions Button {
         margin-left: 1;
+        background: #0b1406;
+        color: #33ff33;
+        border: tall #1d7d2f;
+        text-style: bold;
+    }
+
+    #modal_actions Button:hover {
+        background: #14300d;
+        color: #7dffa8;
+        border: tall #33ff33;
     }
     """
 
@@ -850,38 +882,38 @@ class FilePreviewModal(ModalScreen[None]):
     DEFAULT_CSS = """
     FilePreviewModal {
         align: center middle;
-        background: rgba(17, 17, 27, 0.84);
+        background: rgba(2, 4, 2, 0.88);
     }
 
     #preview_dialog {
         width: 92%;
         max-width: 128;
         height: 88%;
-        border: solid #89b4fa;
-        background: #1e1e2e;
+        border: double #33ff33;
+        background: #070a04;
         padding: 1 2;
     }
 
     #preview_title {
         text-style: bold;
-        color: #cdd6f4;
+        color: #7dffa8;
     }
 
     #preview_path {
-        color: #6c7086;
+        color: #1d7d2f;
     }
 
     #preview_meta {
-        color: #a6adc8;
+        color: #33ff33;
         margin-bottom: 1;
         padding-bottom: 1;
-        border-bottom: solid #313244;
+        border-bottom: double #1d7d2f;
     }
 
     #preview_scroll {
         height: 1fr;
-        border: solid #45475a;
-        background: #11111b;
+        border: double #1d7d2f;
+        background: #020402;
         padding: 0 1;
         margin-bottom: 1;
     }
@@ -893,6 +925,16 @@ class FilePreviewModal(ModalScreen[None]):
 
     #preview_actions Button {
         margin: 0 1 0 0;
+        background: #0b1406;
+        color: #33ff33;
+        border: tall #1d7d2f;
+        text-style: bold;
+    }
+
+    #preview_actions Button:hover {
+        background: #14300d;
+        color: #7dffa8;
+        border: tall #33ff33;
     }
     """
 
@@ -923,8 +965,8 @@ class FilePreviewModal(ModalScreen[None]):
                 else "file name"
             )
             yield Static(
-                f"[bold]{safe_size}[/]   [#6c7086]·[/]   [bold]{safe_mtime}[/]"
-                f"   [#6c7086]·[/]   [bold #a6e3a1]{match_desc}[/]",
+                f"[bold]{safe_size}[/]   [#1d7d2f]·[/]   [bold]{safe_mtime}[/]"
+                f"   [#1d7d2f]·[/]   [bold #ffb000]{match_desc}[/]",
                 id="preview_meta",
             )
 
@@ -960,7 +1002,7 @@ class FilePreviewModal(ModalScreen[None]):
                     line_numbers=True,
                     line_range=(start_l, end_l),
                     highlight_lines={line_num},
-                    theme="monokai",
+                    theme="ansi_dark",
                     word_wrap=True,
                 )
             else:
@@ -968,7 +1010,7 @@ class FilePreviewModal(ModalScreen[None]):
                     str(p),
                     line_numbers=True,
                     line_range=(1, 80),
-                    theme="monokai",
+                    theme="ansi_dark",
                     word_wrap=True,
                 )
             return Static(syntax)
@@ -1008,7 +1050,7 @@ class HelpModal(ModalScreen[None]):
     DEFAULT_CSS = """
     HelpModal {
         align: center middle;
-        background: rgba(17, 17, 27, 0.82);
+        background: rgba(2, 4, 2, 0.88);
     }
 
     #help_dialog {
@@ -1016,18 +1058,18 @@ class HelpModal(ModalScreen[None]):
         max-width: 92;
         height: auto;
         max-height: 90%;
-        border: solid #89b4fa;
-        background: #1e1e2e;
+        border: double #33ff33;
+        background: #070a04;
         padding: 1 2;
     }
 
     #help_title {
         text-style: bold;
-        color: #cdd6f4;
+        color: #7dffa8;
     }
 
     #help_subtitle {
-        color: #6c7086;
+        color: #1d7d2f;
         margin-bottom: 1;
     }
 
@@ -1039,18 +1081,31 @@ class HelpModal(ModalScreen[None]):
     }
 
     .help_key {
-        color: #a6e3a1;
+        color: #ffb000;
         text-style: bold;
     }
 
     .help_desc {
-        color: #cdd6f4;
+        color: #33ff33;
     }
 
     #btn_close_help {
         margin-top: 1;
         height: auto;
         align: right middle;
+    }
+
+    #btn_close_help Button {
+        background: #0b1406;
+        color: #33ff33;
+        border: tall #1d7d2f;
+        text-style: bold;
+    }
+
+    #btn_close_help Button:hover {
+        background: #14300d;
+        color: #7dffa8;
+        border: tall #33ff33;
     }
     """
 
@@ -1100,24 +1155,28 @@ class FindFileApp(App):
 
     CSS = """
     Screen {
-        background: #11111b;
-        color: #cdd6f4;
+        background: #050703;
+        color: #33ff33;
     }
 
     Header {
-        background: #11111b;
-        color: #cdd6f4;
+        background: #060f04;
+        color: #7dffa8;
+        text-style: bold;
+        border-bottom: double #1d7d2f;
     }
 
     Footer {
-        background: #181825;
-        color: #a6adc8;
+        background: #060f04;
+        color: #33ff33;
+        border-top: double #1d7d2f;
+        text-style: bold;
     }
 
     #search_panel {
         height: auto;
-        border: solid #313244;
-        background: #1e1e2e;
+        border: double #33ff33;
+        background: #070a04;
         padding: 1 1 0 1;
         margin: 1 1 0 1;
     }
@@ -1131,17 +1190,18 @@ class FindFileApp(App):
     .row_label {
         width: 9;
         text-style: bold;
-        color: #89b4fa;
+        color: #ffb000;
         padding-right: 1;
     }
 
     Input {
-        border: tall #45475a;
-        background: #11111b;
+        border: tall #1d7d2f;
+        background: #020402;
+        color: #33ff33;
     }
 
     Input:focus {
-        border: tall #89b4fa;
+        border: tall #7dffa8;
     }
 
     #input_query, #input_folder {
@@ -1153,8 +1213,40 @@ class FindFileApp(App):
         min-width: 10;
     }
 
+    Button {
+        background: #0b1406;
+        color: #33ff33;
+        border: tall #1d7d2f;
+        text-style: bold;
+    }
+
+    Button:hover {
+        background: #14300d;
+        color: #7dffa8;
+        border: tall #33ff33;
+    }
+
+    Button:focus {
+        border: tall #ffb000;
+        text-style: bold;
+    }
+
     #btn_search {
         min-width: 12;
+        background: #0d240a;
+        border: tall #33ff33;
+        color: #7dffa8;
+    }
+
+    #btn_stop {
+        color: #ffb000;
+        border: tall #7d4b00;
+    }
+
+    #btn_stop:hover {
+        background: #2a1c00;
+        color: #ffcf5f;
+        border: tall #ffb000;
     }
 
     #options_row Checkbox {
@@ -1169,7 +1261,7 @@ class FindFileApp(App):
 
     #status_bar {
         height: 1;
-        background: #181825;
+        background: #041006;
         padding: 0 1;
         margin: 1 1 0 1;
         align: left middle;
@@ -1177,31 +1269,31 @@ class FindFileApp(App):
 
     #lbl_status {
         width: 1fr;
-        color: #a6adc8;
+        color: #33ff33;
     }
 
     .stat_pill {
         padding: 0 1;
         margin-left: 1;
         text-style: bold;
-        background: #313244;
-        color: #cdd6f4;
+        background: #0b1a08;
+        color: #33ff33;
     }
 
     #pill_matches {
-        color: #a6e3a1;
+        color: #7dffa8;
     }
 
     #pill_scanned {
-        color: #89b4fa;
+        color: #33ff33;
     }
 
     #pill_time {
-        color: #f9e2af;
+        color: #ffb000;
     }
 
     #pill_threads {
-        color: #cba6f7;
+        color: #1d7d2f;
     }
 
     #progress_bar {
@@ -1214,18 +1306,20 @@ class FindFileApp(App):
 
     #progress_bar Bar {
         width: 100%;
+        color: #33ff33;
+        background: #0b1a08;
     }
 
     #results_container {
         height: 1fr;
         margin: 0 1 0 1;
-        border: solid #313244;
-        background: #11111b;
+        border: double #1d7d2f;
+        background: #020402;
     }
 
     #results_table {
         height: 100%;
-        background: #11111b;
+        background: #020402;
     }
 
     #empty_hint {
@@ -1234,27 +1328,28 @@ class FindFileApp(App):
         width: 100%;
         content-align: center middle;
         text-align: center;
-        color: #6c7086;
-        background: #11111b;
+        color: #1d7d2f;
+        background: #020402;
     }
 
     DataTable > .datatable--header {
-        background: #181825;
-        color: #89b4fa;
+        background: #060f04;
+        color: #ffb000;
         text-style: bold;
     }
 
     DataTable > .datatable--cursor {
-        background: #313244;
-        color: #cdd6f4;
+        background: #12330d;
+        color: #7dffa8;
+        text-style: bold;
     }
 
     DataTable > .datatable--even-row {
-        background: #181825;
+        background: #050a04;
     }
 
     DataTable > .datatable--odd-row {
-        background: #11111b;
+        background: #020402;
     }
     """
 
@@ -1581,9 +1676,9 @@ class FindFileApp(App):
         use_regex: bool,
     ) -> None:
         type_badge = (
-            Text("content", style="bold cyan")
+            Text("content", style="bold #ffb000")
             if res.match_type == "content"
-            else Text("name", style="bold green")
+            else Text("name", style="bold #7dffa8")
         )
 
         name_text = highlight_match(res.file_name, query, case_sensitive, use_regex)
