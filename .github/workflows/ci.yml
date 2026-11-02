@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 22.04 still provides prebuilt Python 3.9 via actions/python-versions.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
