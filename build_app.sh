@@ -59,10 +59,40 @@ done
 echo "Packaging FindFile..."
 echo "App destination: $TARGET_APP"
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Error: build_app.sh packages a macOS application and requires macOS."
+    exit 1
+fi
+
+if [[ ! -f "$SCRIPT_DIR/findfile.py" ]]; then
+    echo "Error: findfile.py was not found next to build_app.sh."
+    exit 1
+fi
+
+# Keep the bundle version in sync with the application.
+APP_VERSION="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SCRIPT_DIR/findfile.py" | head -n 1)"
+APP_VERSION="${APP_VERSION:-1.2.0}"
+echo "Version: $APP_VERSION"
+
+TARGET_PARENT="$(dirname "$TARGET_APP")"
+if [[ ! -d "$TARGET_PARENT" ]]; then
+    mkdir -p "$TARGET_PARENT" 2>/dev/null || true
+fi
+if [[ ! -w "$TARGET_PARENT" ]]; then
+    echo "Error: cannot write to $TARGET_PARENT"
+    echo "Try: $0 --user"
+    exit 1
+fi
+
 # 1. Make sure the icon exists
 ICON_PATH="$SCRIPT_DIR/assets/AppIcon.icns"
 if [[ ! -f "$ICON_PATH" ]]; then
     echo "Generating AppIcon.icns..."
+    if ! python3 -c "import PIL" >/dev/null 2>&1; then
+        echo "Error: Pillow is required to generate the icon."
+        echo "Run: python3 -m pip install pillow"
+        exit 1
+    fi
     python3 "$SCRIPT_DIR/scripts/generate_icon.py" "$ICON_PATH"
 fi
 
@@ -76,7 +106,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 # 3. Write Info.plist
 echo "Writing Info.plist..."
-cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
+cat << EOF > "$CONTENTS_DIR/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -88,9 +118,9 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundleIdentifier</key>
     <string>com.cassio.findfile</string>
     <key>CFBundleVersion</key>
-    <string>1.1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -108,6 +138,10 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 </dict>
 </plist>
 EOF
+
+if command -v plutil >/dev/null 2>&1; then
+    plutil -lint "$CONTENTS_DIR/Info.plist" >/dev/null
+fi
 
 # PkgInfo
 echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"
@@ -239,7 +273,7 @@ EOF
 fi
 
 echo ""
-echo "Done."
+echo "Done. FindFile $APP_VERSION is installed."
 echo "   - App: Applications > FindFile, or Spotlight / Launchpad"
 echo "   - Terminal: run 'findfile' from any folder"
 echo ""

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # 22.04 still provides prebuilt Python 3.9 via actions/python-versions.
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.9"
+            textual: ""
+          - python-version: "3.9"
+            textual: "textual==0.82.0"
+          - python-version: "3.12"
+            textual: ""
+          - python-version: "3.13"
+            textual: ""
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" ${{ matrix.textual }}
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: python -m pytest

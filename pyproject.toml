@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "findfile"
+dynamic = ["version"]
+description = "Fast terminal search for file names and file contents"
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["search", "grep", "tui", "textual", "files"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "textual>=0.82.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+icon = [
+    "pillow>=10.0",
+]
+
+[project.scripts]
+findfile = "findfile:main"
+
+[tool.setuptools]
+py-modules = ["findfile"]
+
+[tool.setuptools.dynamic]
+version = { attr = "findfile.__version__" }
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["test_findfile.py"]
+addopts = "-q"
