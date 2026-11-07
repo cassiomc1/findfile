@@ -71,7 +71,7 @@ fi
 
 # Keep the bundle version in sync with the application.
 APP_VERSION="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SCRIPT_DIR/findfile.py" | head -n 1)"
-APP_VERSION="${APP_VERSION:-1.2.0}"
+APP_VERSION="${APP_VERSION:-0.0.0}"
 echo "Version: $APP_VERSION"
 
 TARGET_PARENT="$(dirname "$TARGET_APP")"
@@ -100,6 +100,18 @@ fi
 CONTENTS_DIR="$TARGET_APP/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+
+# Replace an older FindFile bundle cleanly so stale files never linger, but
+# refuse to touch a bundle that belongs to another app.
+if [[ -d "$CONTENTS_DIR" ]]; then
+    if grep -q "<string>com.cassio.findfile</string>" "$CONTENTS_DIR/Info.plist" 2>/dev/null; then
+        echo "Replacing the existing FindFile bundle..."
+        rm -rf "$CONTENTS_DIR"
+    else
+        echo "Error: $TARGET_APP exists and is not a FindFile bundle."
+        exit 1
+    fi
+fi
 
 echo "Creating bundle directories..."
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"

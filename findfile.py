@@ -13,6 +13,7 @@ import argparse
 import datetime
 import fnmatch
 import io
+import itertools
 import os
 import queue
 import re
@@ -46,7 +47,7 @@ from textual.widgets import (
     Static,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -106,6 +107,11 @@ BATCH_SIZE = 30
 FLUSH_INTERVAL = 0.05
 PROGRESS_INTERVAL = 0.05
 MAX_THREADS = 32
+PREVIEW_LINES_BEFORE = 15
+PREVIEW_LINES_AFTER = 45
+PREVIEW_MAX_LINE_CHARS = 2000
+CLIPBOARD_TIMEOUT = 5
+GLOB_CHARS = "*?["
 
 # Table sort helpers, shared by the header handler and the status pill.
 SORT_KEY_FUNCS: dict[str, Callable[["SearchResult"], object]] = {
@@ -214,7 +220,12 @@ def copy_to_clipboard(text: str) -> bool:
         if shutil.which(command[0]) is None:
             continue
         try:
-            subprocess.run(command, input=text.encode("utf-8"), check=True)
+            subprocess.run(
+                command,
+                input=text.encode("utf-8"),
+                check=True,
+                timeout=CLIPBOARD_TIMEOUT,
+            )
             return True
         except (OSError, subprocess.SubprocessError):
             continue
@@ -265,16 +276,32 @@ def reveal_in_file_manager(filepath: str) -> bool:
     return False
 
 
+def has_glob(query: str) -> bool:
+    """Return True when a plain (non-regex) query uses shell wildcards."""
+    return any(character in query for character in GLOB_CHARS)
+
+
 def build_highlight_pattern(
     query: str,
     case_sensitive: bool = False,
     use_regex: bool = False,
+    glob: bool = False,
 ) -> Optional[Pattern[str]]:
-    """Compile the pattern used to highlight matches, or None if unusable."""
+    """Compile the pattern used to highlight matches, or None if unusable.
+
+    With ``glob=True`` a wildcard query (``*.py``, ``test_?``) is translated
+    the same way the engine matches file names, so the whole matching name is
+    highlighted instead of nothing.
+    """
     if not query:
         return None
     try:
-        pattern = query if use_regex else re.escape(query)
+        if use_regex:
+            pattern = query
+        elif glob and has_glob(query):
+            pattern = fnmatch.translate(query)
+        else:
+            pattern = re.escape(query)
         flags = 0 if case_sensitive else re.IGNORECASE
         return re.compile(pattern, flags=flags)
     except re.error:
@@ -326,6 +353,25 @@ def parse_extensions(raw: str) -> Optional[Set[str]]:
         if cleaned:
             extensions.add(cleaned)
     return extensions or None
+
+
+def read_line_window(path: str, first_line: int, last_line: int) -> Tuple[str, int]:
+    """Read lines ``first_line..last_line`` (1-based, inclusive) of a text file.
+
+    Only the requested window is decoded, so previewing a multi-gigabyte log
+    costs a streaming skip instead of loading the whole file. Very long lines
+    are clipped. Returns the text and the first line number actually read.
+    """
+    first_line = max(1, first_line)
+    last_line = max(first_line, last_line)
+    lines: List[str] = []
+    with open(path, "r", encoding="utf-8", errors="replace", newline=None) as handle:
+        window = itertools.islice(handle, first_line - 1, last_line)
+        for line in window:
+            if len(line) > PREVIEW_MAX_LINE_CHARS:
+                line = line[:PREVIEW_MAX_LINE_CHARS] + " …\n"
+            lines.append(line)
+    return "".join(lines), first_line
 
 
 def _snippet_from_text(text: str) -> str:
@@ -554,9 +600,7 @@ class SearchEngine:
         """Walk the tree with os.scandir and feed name hits and content work."""
         stack = [self.root_dir]
         visited_dirs: Set[Tuple[int, int]] = set()
-        has_wildcard = (not self.use_regex) and any(
-            character in self.query for character in "*?["
-        )
+        has_wildcard = (not self.use_regex) and has_glob(self.query)
 
         while stack and not self.stop_event.is_set():
             current_dir = stack.pop()
@@ -1110,24 +1154,23 @@ class FilePreviewModal(ModalScreen[None]):
         try:
             line_number = self.result.line_number
             if line_number is not None:
-                start_line = max(1, line_number - 15)
-                end_line = line_number + 45
-                syntax = Syntax.from_path(
-                    str(path),
-                    line_numbers=True,
-                    line_range=(start_line, end_line),
-                    highlight_lines={line_number},
-                    theme="ansi_dark",
-                    word_wrap=True,
-                )
+                first_line = line_number - PREVIEW_LINES_BEFORE
+                last_line = line_number + PREVIEW_LINES_AFTER
             else:
-                syntax = Syntax.from_path(
-                    str(path),
-                    line_numbers=True,
-                    line_range=(1, 60),
-                    theme="ansi_dark",
-                    word_wrap=True,
-                )
+                first_line = 1
+                last_line = PREVIEW_LINES_BEFORE + PREVIEW_LINES_AFTER
+            code, start_line = read_line_window(str(path), first_line, last_line)
+            if not code:
+                return Static("[italic #1d7d2f]Empty file.[/]")
+            syntax = Syntax(
+                code,
+                Syntax.guess_lexer(str(path), code=code),
+                line_numbers=True,
+                start_line=start_line,
+                highlight_lines={line_number} if line_number is not None else None,
+                theme="ansi_dark",
+                word_wrap=True,
+            )
             return Static(syntax)
         except Exception as exc:  # noqa: BLE001 - show the failure in the dialog
             return Static(f"[red]Could not read preview:[/] {escape(str(exc))}")
@@ -1573,6 +1616,7 @@ class FindFileApp(App):
         self,
         initial_folder: str = ".",
         initial_query: str = "",
+        initial_name: bool = True,
         initial_content: bool = False,
         initial_regex: bool = False,
         initial_case: bool = False,
@@ -1584,6 +1628,7 @@ class FindFileApp(App):
         super().__init__()
         self.initial_folder = str(Path(initial_folder).expanduser().resolve())
         self.initial_query = initial_query
+        self.initial_name = initial_name
         self.initial_content = initial_content
         self.initial_regex = initial_regex
         self.initial_case = initial_case
@@ -1607,6 +1652,7 @@ class FindFileApp(App):
         self._last_case_sensitive = False
         self._last_use_regex = False
         self._highlight_pattern: Optional[Pattern[str]] = None
+        self._name_highlight_pattern: Optional[Pattern[str]] = None
 
         self._sort_key: Optional[str] = None
         self._sort_reverse: dict[str, bool] = {}
@@ -1646,7 +1692,7 @@ class FindFileApp(App):
 
             with Horizontal(id="options_row"):
                 yield Label("Filters", classes="row_label")
-                yield Checkbox("Name", value=True, id="chk_name")
+                yield Checkbox("Name", value=self.initial_name, id="chk_name")
                 yield Checkbox("Text", value=self.initial_content, id="chk_content")
                 yield Checkbox("Case", value=self.initial_case, id="chk_case")
                 yield Checkbox("Regex", value=self.initial_regex, id="chk_regex")
@@ -1832,6 +1878,9 @@ class FindFileApp(App):
         self._highlight_pattern = build_highlight_pattern(
             query, case_sensitive, use_regex
         )
+        self._name_highlight_pattern = build_highlight_pattern(
+            query, case_sensitive, use_regex, glob=True
+        )
 
         table = self.query_one("#results_table", DataTable)
         table.clear()
@@ -1951,7 +2000,7 @@ class FindFileApp(App):
             self._last_query,
             self._last_case_sensitive,
             self._last_use_regex,
-            pattern=self._highlight_pattern,
+            pattern=self._name_highlight_pattern,
         )
         line_text = f"L{result.line_number}" if result.line_number is not None else "-"
         snippet_text = (
@@ -2283,6 +2332,7 @@ Examples:
   findfile.py . "def main" -c           # Search file contents for 'def main'
   findfile.py . "def\\s+test_" -c -r    # Search file contents with a regex
   findfile.py . "api_key" -c -e py,js   # Only .py and .js files
+  findfile.py . "TODO" --no-name -p      # Print content matches, no UI
         """,
     )
     parser.add_argument(
@@ -2302,6 +2352,19 @@ Examples:
         "--content",
         action="store_true",
         help="Also search inside file contents",
+    )
+    parser.add_argument(
+        "--no-name",
+        action="store_true",
+        help="Do not match file names; search contents only (implies -c)",
+    )
+    parser.add_argument(
+        "-p",
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="Print matches to stdout and exit, without the UI "
+        "(exit status 0 on a match, 1 on none)",
     )
     parser.add_argument(
         "-r",
@@ -2350,6 +2413,67 @@ Examples:
     return parser
 
 
+def format_print_line(result: SearchResult, display_root: str) -> str:
+    """Format one result as ``path`` or ``path:line:snippet`` (grep style)."""
+    path = os.path.normpath(os.path.join(display_root, result.rel_path))
+    if result.match_type == "content" and result.line_number is not None:
+        return f"{path}:{result.line_number}:{result.snippet}"
+    return path
+
+
+def run_print_mode(
+    args: argparse.Namespace,
+    stdout=None,
+    stderr=None,
+) -> int:
+    """Run one search without the UI and print sorted results.
+
+    Returns 0 when something matched, 1 when nothing did, and 130 when the
+    search was interrupted.
+    """
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    collected: List[SearchResult] = []
+    engine = SearchEngine(
+        root_dir=args.folder,
+        query=args.query,
+        search_name=not args.no_name,
+        search_content=args.content or args.no_name,
+        case_sensitive=args.case_sensitive,
+        ignore_caches=not args.no_ignore,
+        use_regex=args.regex,
+        ext_filter=parse_extensions(args.ext),
+        max_workers=args.workers,
+        max_results=args.max_results,
+        on_batch=collected.extend,
+    )
+
+    try:
+        engine.run()
+    except KeyboardInterrupt:
+        engine.stop()
+        return 130
+
+    collected.sort(
+        key=lambda result: (
+            result.rel_path,
+            0 if result.match_type == "name" else 1,
+            result.line_number or 0,
+        )
+    )
+    for result in collected:
+        stdout.write(format_print_line(result, args.folder) + "\n")
+    stdout.flush()
+
+    if engine.limit_reached:
+        stderr.write(
+            f"findfile: stopped at {engine.max_results:,} results (--max-results)\n"
+        )
+    if engine.errors:
+        stderr.write(f"findfile: {engine.errors:,} files or folders could not be read\n")
+    return 0 if collected else 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -2364,10 +2488,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.max_results < 1:
         parser.error("--max-results must be at least 1")
 
+    if args.regex and args.query:
+        try:
+            re.compile(args.query)
+        except re.error as exc:
+            parser.error(f"invalid regular expression: {exc}")
+
+    if args.print_only:
+        if not args.query:
+            parser.error("--print needs a search term")
+        return run_print_mode(args)
+
     app = FindFileApp(
         initial_folder=str(folder),
         initial_query=args.query,
-        initial_content=args.content,
+        initial_name=not args.no_name,
+        initial_content=args.content or args.no_name,
         initial_regex=args.regex,
         initial_case=args.case_sensitive,
         initial_exts=args.ext,
