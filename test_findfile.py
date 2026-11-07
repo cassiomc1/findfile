@@ -26,10 +26,13 @@ from findfile import (
     build_highlight_pattern,
     build_parser,
     format_mtime,
+    format_print_line,
     format_size,
     highlight_match,
     is_binary_file,
+    main,
     parse_extensions,
+    read_line_window,
 )
 
 # -----------------------------------------------------------------------------
@@ -165,6 +168,37 @@ def test_build_highlight_pattern() -> None:
     assert build_highlight_pattern("(", use_regex=True) is None
     assert build_highlight_pattern("(", use_regex=False) is not None
     assert build_highlight_pattern("worker", use_regex=False) is not None
+
+
+def test_glob_highlight_pattern() -> None:
+    pattern = build_highlight_pattern("*.py", glob=True)
+    assert pattern is not None
+    text = highlight_match("worker.py", "*.py", pattern=pattern)
+    assert [span for span in text.spans] and text.spans[0].start == 0
+    assert text.spans[0].end == len("worker.py")
+
+    # Without glob=True the wildcard is literal and highlights nothing here.
+    literal = highlight_match("worker.py", "*.py")
+    assert not literal.spans
+
+
+def test_read_line_window() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "big.txt"
+        path.write_text("".join(f"line {n}\n" for n in range(1, 1001)), encoding="utf-8")
+
+        code, start = read_line_window(str(path), 500, 502)
+        assert start == 500
+        assert code == "line 500\nline 501\nline 502\n"
+
+        code, start = read_line_window(str(path), -10, 2)
+        assert start == 1
+        assert code == "line 1\nline 2\n"
+
+        long_path = Path(tmp) / "long.txt"
+        long_path.write_text("x" * 50_000 + "\n", encoding="utf-8")
+        code, _ = read_line_window(str(long_path), 1, 1)
+        assert len(code) < 2100
 
 
 def test_is_binary_file() -> None:
@@ -512,11 +546,52 @@ def test_cli_parser_flags() -> None:
     assert args.no_ignore is False
 
 
+def test_cli_print_mode() -> None:
+    import contextlib
+    import io
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_tree(tmp, _sample_tree())
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = main([tmp, "api_key", "--no-name", "-p"])
+        lines = out.getvalue().splitlines()
+        assert status == 0
+        assert lines == sorted(lines)
+        assert any(line.endswith("config_prod.json:3:\"api_key\": \"my_secret_token_123\"")
+                   for line in lines)
+        # --no-name means content only: no bare-path name rows.
+        assert all(line.count(":") >= 2 for line in lines)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = main([tmp, "*.py", "-p"])
+        assert status == 0
+        assert out.getvalue().splitlines() == [os.path.join(tmp, "app_worker.py")]
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = main([tmp, "no_such_term_anywhere", "-p", "-c"])
+        assert status == 1
+        assert out.getvalue() == ""
+
+
+def test_format_print_line() -> None:
+    from findfile import SearchResult
+
+    name_hit = SearchResult(1, "name", "/r/a/b.txt", "b.txt", "a/b.txt")
+    content_hit = SearchResult(2, "content", "/r/a/b.txt", "b.txt", "a/b.txt", 7, "hi")
+    assert format_print_line(name_hit, ".") == "a/b.txt"
+    assert format_print_line(content_hit, "/r") == "/r/a/b.txt:7:hi"
+
+
 def test_cli_parser_defaults() -> None:
     args = build_parser().parse_args([])
     assert args.folder == "."
     assert args.query == ""
     assert not args.content and not args.regex
+    assert not args.no_name and not args.print_only
 
 
 # -----------------------------------------------------------------------------

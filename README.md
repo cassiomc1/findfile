@@ -19,8 +19,8 @@ Python 3 with Textual and Rich, and scanned with a thread pool.
     and heavy caches (`.git`, `node_modules`, `.venv`, and similar) are
     skipped. Both behaviours are documented under [Limits](#limits).
 - **Search modes**
-  - **Name**: file names that contain the term (`*`, `?`, `[seq]`, or a
-    regular expression).
+  - **Name**: file names that contain the term, a shell wildcard (`*`, `?`,
+    `[seq]`, matched against the whole name), or a regular expression.
   - **Text**: line number and snippet from inside the file.
   - **Both**: name hits and content hits in one run.
   - **Case**: optional case-sensitive matching, including accented UTF-8.
@@ -29,7 +29,8 @@ Python 3 with Textual and Rich, and scanned with a thread pool.
 - **Interface**
   - Green-phosphor mainframe look: near-black screen, phosphor green text,
     and amber accents.
-  - Live results with the term highlighted in file names and snippets.
+  - Live results with the term highlighted in file names and snippets
+    (wildcard queries highlight the whole matching name).
   - Sort by clicking any column header; the status bar shows the current
     sort column and direction.
   - Live counters for matches, files, elapsed time, threads, and files per
@@ -37,12 +38,17 @@ Python 3 with Textual and Rich, and scanned with a thread pool.
   - Result cap (default 5,000) so the table cannot grow without bound.
   - Empty state before searching and explicit messages for no matches,
     cancelled searches, unreadable files, and the result cap.
+- **Print mode** (`-p`)
+  - Runs one search without the UI and prints grep-style lines
+    (`path` for name hits, `path:line:snippet` for content hits), sorted.
+  - Exit status 0 on a match and 1 on none, so it works in scripts and pipes.
 - **Folder picker**
   - Shortcuts: Home, Here, Docs, Downloads, and Up.
   - Editable path (press Enter to accept) plus a directory tree.
 - **Preview**
   - `Enter` or a double-click opens metadata and a syntax-highlighted window
-    around the matching line.
+    around the matching line. Only that window is read, so previewing a huge
+    log stays fast and memory-light.
   - `o` opens the file in the default application.
   - `f` reveals it in Finder or the system file manager.
   - `c` copies the full path; `y` copies the matched line.
@@ -104,11 +110,20 @@ python3 findfile.py ~/Projects "def\s+test_\w+" -c -r
 python3 findfile.py ~/Projects "api_key" -c -e py,js
 ```
 
+Add `-p` to print the results and exit instead of opening the UI:
+
+```bash
+findfile ~/Projects "TODO" --no-name -p | head
+findfile . "*.md" -p
+```
+
 | Flag | Meaning |
 | :--- | :--- |
 | `folder` | Folder to search. Default: current directory. |
 | `query` | Term to search as soon as the UI opens. |
 | `-c`, `--content` | Also search inside files. |
+| `--no-name` | Search contents only, not file names (implies `-c`). |
+| `-p`, `--print` | Print matches and exit, without the UI (exit 1 when nothing matches). |
 | `-r`, `--regex` | Treat the term as a regular expression. |
 | `-s`, `--case-sensitive` | Match case exactly. |
 | `-e`, `--ext LIST` | Extension filter, e.g. `py,js,txt`. |
@@ -166,7 +181,7 @@ python3 -m venv .venv
 
 The suite covers name/content search, wildcards, regex, case sensitivity,
 Unicode, extension filters, binary and cache skipping, cancellation and the
-result cap, plus headless Textual tests for searching, sorting, clearing,
+result cap, print mode, windowed previews, plus headless Textual tests for searching, sorting, clearing,
 dialogs, and markup-safe rendering.
 
 ### Layout
