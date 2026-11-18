@@ -24,38 +24,41 @@ Python 3 with Textual and Rich, and scanned with a thread pool.
   - **Text**: line number and snippet from inside the file.
   - **Both**: name hits and content hits in one run.
   - **Case**: optional case-sensitive matching, including accented UTF-8.
-  - **Extensions**: limit the scan (`py, js, ts, txt`). Empty means every
-    extension.
+  - **Extensions**: limit the scan (`py, js, ts, txt`, including dotfiles such as `env` for `.env`). Empty means every extension.
 - **Interface**
   - Green-phosphor mainframe look: near-black screen, phosphor green text,
     and amber accents.
   - Live results with the term highlighted in file names and snippets
-    (wildcard queries highlight the whole matching name).
-  - Sort by clicking any column header; the status bar shows the current
+    (wildcard queries highlight the whole matching name), with long matching
+    lines centered around the match.
+  - Sort by clicking any column header (preserving the selected row); the status bar shows the current
     sort column and direction.
   - Live counters for matches, files, elapsed time, threads, and files per
     second.
   - Result cap (default 5,000) so the table cannot grow without bound.
   - Empty state before searching and explicit messages for no matches,
     cancelled searches, unreadable files, and the result cap.
-- **Print mode** (`-p`)
-  - Runs one search without the UI and prints grep-style lines
+- **Print mode** (`-p` / `-l`)
+  - `-p` runs one search without the UI and prints grep-style lines
     (`path` for name hits, `path:line:snippet` for content hits), sorted.
+  - `-l` (`--files-with-matches`) prints each matching file path once.
+  - `-0` (`--null`) separates printed entries with a NUL byte for safe `xargs -0` pipelines.
   - Exit status 0 on a match and 1 on none, so it works in scripts and pipes.
 - **Folder picker**
   - Shortcuts: Home, Here, Docs, Downloads, and Up.
   - Editable path (press Enter to accept) plus a directory tree.
 - **Preview**
   - `Enter` or a double-click opens metadata and a syntax-highlighted window
-    around the matching line. Only that window is read, so previewing a huge
+    around the matching line (centering very long matching lines around the hit). Only that window is read, so previewing a huge
     log stays fast and memory-light.
   - `o` opens the file in the default application.
   - `f` reveals it in Finder or the system file manager.
   - `c` copies the full path; `y` copies the matched line.
+  - `Esc` or `q` closes the dialog.
 
 ## Install
 
-Python 3.9 or newer, on macOS or Linux.
+Python 3.9 or newer, on macOS, Linux, or Windows.
 
 From a clone:
 
@@ -110,11 +113,12 @@ python3 findfile.py ~/Projects "def\s+test_\w+" -c -r
 python3 findfile.py ~/Projects "api_key" -c -e py,js
 ```
 
-Add `-p` to print the results and exit instead of opening the UI:
+Add `-p` to print the results, `-l` to print each matching file path once, and `-0` for NUL-delimited pipelines:
 
 ```bash
 findfile ~/Projects "TODO" --no-name -p | head
 findfile . "*.md" -p
+findfile ~/Projects "api_key" -c -l -0 | xargs -0 ls -la
 ```
 
 | Flag | Meaning |
@@ -124,6 +128,8 @@ findfile . "*.md" -p
 | `-c`, `--content` | Also search inside files. |
 | `--no-name` | Search contents only, not file names (implies `-c`). |
 | `-p`, `--print` | Print matches and exit, without the UI (exit 1 when nothing matches). |
+| `-l`, `--files-with-matches` | Print each matching file path once and exit (implies `--print`). |
+| `-0`, `--null` | Separate printed entries with a NUL byte instead of a newline. |
 | `-r`, `--regex` | Treat the term as a regular expression. |
 | `-s`, `--case-sensitive` | Match case exactly. |
 | `-e`, `--ext LIST` | Extension filter, e.g. `py,js,txt`. |
@@ -137,6 +143,7 @@ findfile . "*.md" -p
 | Key | Action |
 | :--- | :--- |
 | `Enter` in a field | Start the search |
+| `Down` in search field | Jump to the results table |
 | `Esc` | Stop a running search, or close a dialog |
 | `Enter` or double-click on a row | Open the preview |
 | Column header | Sort by that column; click again to reverse |
@@ -149,7 +156,7 @@ findfile . "*.md" -p
 | `c` | Copy the absolute path |
 | `y` | Copy the matched snippet (file name for name hits) |
 | `F1` or `?` | Help |
-| `q` | Quit |
+| `q` | Quit, or close a dialog |
 
 ## Limits
 

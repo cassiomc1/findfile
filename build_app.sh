@@ -83,6 +83,7 @@ if [[ ! -w "$TARGET_PARENT" ]]; then
     echo "Try: $0 --user"
     exit 1
 fi
+TARGET_APP="$(cd "$TARGET_PARENT" && pwd)/$(basename "$TARGET_APP")"
 
 # 1. Make sure the icon exists
 ICON_PATH="$SCRIPT_DIR/assets/AppIcon.icns"
@@ -178,10 +179,13 @@ fi
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_PY="$APP_DIR/findfile.py"
+VENV_DIR="$HOME/Library/Application Support/FindFile/venv"
 
 find_python() {
-    local candidates=()
-    # Prefer Python.framework (newest first), then Homebrew and the active environment.
+    local candidates=(
+        "$VENV_DIR/bin/python3"
+    )
+    # Prefer the managed venv, then Python.framework (newest first), Homebrew, and PATH.
     while IFS= read -r p; do
         candidates+=("$p")
     done < <(ls -1r /Library/Frameworks/Python.framework/Versions/*/bin/python3 2>/dev/null || true)
@@ -208,10 +212,14 @@ PY_EXEC="$(find_python || true)"
 
 if [ -z "$PY_EXEC" ]; then
     echo "Python with 'textual' and 'rich' was not found."
-    echo "Installing dependencies..."
-    if command -v pip3 >/dev/null 2>&1; then
-        pip3 install -r "$APP_DIR/requirements.txt"
-        PY_EXEC="$(find_python || command -v python3)"
+    echo "Installing dependencies in $VENV_DIR..."
+    BASE_PY="$(command -v python3 || true)"
+    if [ -n "$BASE_PY" ]; then
+        mkdir -p "$(dirname "$VENV_DIR")"
+        "$BASE_PY" -m venv "$VENV_DIR"
+        "$VENV_DIR/bin/pip" install --upgrade pip
+        "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+        PY_EXEC="$VENV_DIR/bin/python3"
     else
         echo "Install Python 3, then run: pip3 install textual rich"
         read -r -p "Press Enter to close..."
@@ -252,14 +260,16 @@ if [[ "$INSTALL_CLI" == true ]]; then
     CLI_BIN_DIR="$HOME/.local/bin"
     mkdir -p "$CLI_BIN_DIR"
     CLI_PATH="$CLI_BIN_DIR/findfile"
+    APP_PY_Q="$(printf '%q' "$RESOURCES_DIR/findfile.py")"
+    FALLBACK_PY_Q="$(printf '%q' "$SCRIPT_DIR/findfile.py")"
 
     cat << EOF > "$CLI_PATH"
 #!/usr/bin/env bash
 # ⚡ FindFile CLI Wrapper
 
-APP_PY="$RESOURCES_DIR/findfile.py"
+APP_PY=${APP_PY_Q}
 if [[ ! -f "\$APP_PY" ]]; then
-    APP_PY="$SCRIPT_DIR/findfile.py"
+    APP_PY=${FALLBACK_PY_Q}
 fi
 
 PY_EXEC=""
@@ -269,6 +279,7 @@ while IFS= read -r p; do
         break
     fi
 done < <(
+    printf "%s\n" "\$HOME/Library/Application Support/FindFile/venv/bin/python3"
     ls -1r /Library/Frameworks/Python.framework/Versions/*/bin/python3 2>/dev/null || true
     command -v python3 2>/dev/null || true
     printf "%s\n" "/opt/homebrew/bin/python3" "/usr/local/bin/python3" "/usr/bin/python3"

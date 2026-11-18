@@ -8,12 +8,15 @@ Runs with plain Python (``python3 test_findfile.py``) and with pytest.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import os
 import tempfile
 import threading
 import time
 import traceback
 from pathlib import Path
+from unittest import mock
 
 from textual.widgets import Checkbox, DataTable, Input, Label
 
@@ -23,16 +26,20 @@ from findfile import (
     FolderPickerModal,
     HelpModal,
     SearchEngine,
+    SearchResult,
     build_highlight_pattern,
     build_parser,
+    file_extension,
     format_mtime,
     format_print_line,
     format_size,
+    has_glob,
     highlight_match,
     is_binary_file,
     main,
     parse_extensions,
     read_line_window,
+    run_print_mode,
 )
 
 # -----------------------------------------------------------------------------
@@ -451,13 +458,166 @@ def test_max_matches_per_file() -> None:
 def test_snippet_is_truncated() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         long_line = ("a" * 300) + " needle " + ("b" * 300)
-        _write_tree(tmp, {"long.txt": long_line + "\n"})
+        end_line = ("x" * 300) + " needle"
+        regex_line = ("p" * 260) + " token_987 " + ("q" * 260)
+        _write_tree(
+            tmp,
+            {
+                "long.txt": long_line + "\n",
+                "end.txt": end_line + "\n",
+                "regex.txt": regex_line + "\n",
+            },
+        )
         _, results, _, found, _ = _run_engine(
             tmp, "needle", search_name=False, search_content=True
         )
+        assert found == 2
+        by_name = {result.file_name: result for result in results}
+        assert len(by_name["long.txt"].snippet) == 200
+        assert by_name["long.txt"].snippet.startswith("...")
+        assert by_name["long.txt"].snippet.endswith("...")
+        assert "needle" in by_name["long.txt"].snippet
+
+        assert len(by_name["end.txt"].snippet) == 200
+        assert by_name["end.txt"].snippet.startswith("...")
+        assert by_name["end.txt"].snippet.endswith("needle")
+
+        _, regex_results, _, regex_found, _ = _run_engine(
+            tmp, r"token_\d+", search_name=False, search_content=True, use_regex=True
+        )
+        assert regex_found == 1
+        assert len(regex_results[0].snippet) == 200
+        assert "token_987" in regex_results[0].snippet
+
+
+def test_has_glob_unclosed_bracket() -> None:
+    assert has_glob("*.py") is True
+    assert has_glob("app_?orker.py") is True
+    assert has_glob("a[12].txt") is True
+    assert has_glob("file[1") is False
+    assert has_glob("[red") is False
+    assert has_glob("arr[]") is False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_tree(
+            tmp,
+            {
+                "file[1.txt": "x",
+                "[red]evil.txt": "x",
+                "arr[].py": "x",
+                "a1.txt": "x",
+                "a2.txt": "x",
+                "b1.txt": "x",
+            },
+        )
+        _, results, _, found, _ = _run_engine(tmp, "file[1", search_name=True)
+        assert found == 1 and results[0].file_name == "file[1.txt"
+
+        _, results, _, found, _ = _run_engine(tmp, "[red", search_name=True)
+        assert found == 1 and results[0].file_name == "[red]evil.txt"
+
+        _, results, _, found, _ = _run_engine(tmp, "arr[]", search_name=True)
+        assert found == 1 and results[0].file_name == "arr[].py"
+
+        _, results, _, found, _ = _run_engine(tmp, "a[12].txt", search_name=True)
+        assert found == 2
+        assert {result.file_name for result in results} == {"a1.txt", "a2.txt"}
+
+
+def test_dotfile_extension_filter() -> None:
+    assert file_extension(".env") == "env"
+    assert file_extension("app.py") == "py"
+    assert file_extension("Makefile") == ""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_tree(
+            tmp,
+            {
+                ".env": "API_TOKEN=xyz\n",
+                "notes.txt": "API_TOKEN=xyz\n",
+            },
+        )
+        _, results, _, found, _ = _run_engine(
+            tmp,
+            "API_TOKEN",
+            search_name=False,
+            search_content=True,
+            ext_filter={"env"},
+        )
         assert found == 1
-        assert len(results[0].snippet) == 200
-        assert results[0].snippet.endswith("...")
+        assert results[0].file_name == ".env"
+
+
+def test_consistent_line_numbers_with_carriage_returns() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "mixed.log"
+        path.write_bytes(b"first\rinner\nsecond_line\r\nthird needle\r\n")
+
+        _, byte_hits, _, byte_found, _ = _run_engine(
+            tmp, "needle", search_name=False, search_content=True
+        )
+        _, regex_hits, _, regex_found, _ = _run_engine(
+            tmp, r"needle$", search_name=False, search_content=True, use_regex=True
+        )
+        assert byte_found == 1 and regex_found == 1
+        assert byte_hits[0].line_number == 3
+        assert regex_hits[0].line_number == 3
+
+        code, start = read_line_window(str(path), 1, 5)
+        assert start == 1
+        assert code.splitlines()[2] == "third needle"
+
+        long_path = Path(tmp) / "wide.log"
+        long_path.write_text(
+            ("a" * 3000) + " focus_hit " + ("b" * 3000) + "\n",
+            encoding="utf-8",
+        )
+        clipped, _ = read_line_window(
+            str(long_path), 1, 1, focus_line=1, query="focus_hit"
+        )
+        assert "focus_hit" in clipped
+        assert clipped.startswith("… ") and clipped.rstrip("\n").endswith(" …")
+
+
+def test_shallow_first_sorted_traversal() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_tree(
+            tmp,
+            {
+                "root.txt": "needle\n",
+                "b_dir/sub.txt": "needle\n",
+                "a_dir/sub.txt": "needle\n",
+            },
+        )
+        orig_stat = os.stat
+
+        def zero_inode_stat(path, *args, **kwargs):
+            real = orig_stat(path, *args, **kwargs)
+            return os.stat_result(
+                (
+                    real.st_mode,
+                    0,
+                    real.st_dev,
+                    real.st_nlink,
+                    real.st_uid,
+                    real.st_gid,
+                    real.st_size,
+                    real.st_atime,
+                    real.st_mtime,
+                    real.st_ctime,
+                )
+            )
+
+        with mock.patch("findfile.os.stat", side_effect=zero_inode_stat):
+            _, results, _, found, _ = _run_engine(
+                tmp, "needle", search_name=False, search_content=True
+            )
+        assert found == 3
+        assert {result.rel_path for result in results} == {
+            "root.txt",
+            os.path.join("a_dir", "sub.txt"),
+            os.path.join("b_dir", "sub.txt"),
+        }
 
 
 def test_stop_before_run() -> None:
@@ -547,9 +707,6 @@ def test_cli_parser_flags() -> None:
 
 
 def test_cli_print_mode() -> None:
-    import contextlib
-    import io
-
     with tempfile.TemporaryDirectory() as tmp:
         _write_tree(tmp, _sample_tree())
 
@@ -577,13 +734,60 @@ def test_cli_print_mode() -> None:
         assert out.getvalue() == ""
 
 
-def test_format_print_line() -> None:
-    from findfile import SearchResult
+def test_cli_files_with_matches_and_null() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_tree(
+            tmp,
+            {
+                "config_hit.txt": "config appears once\nconfig appears twice\n",
+                "other.txt": "config inside content\n",
+            },
+        )
 
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = main([tmp, "config", "-c", "-l", "-0"])
+        assert status == 0
+        entries = [item for item in out.getvalue().split("\0") if item]
+        assert entries == sorted(
+            [
+                os.path.join(tmp, "config_hit.txt"),
+                os.path.join(tmp, "other.txt"),
+            ]
+        )
+
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main([tmp, "config", "-0"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("--null without --print or -l should exit with error")
+
+
+def test_print_mode_broken_pipe() -> None:
+    class BrokenWriter(io.StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_called = False
+
+        def write(self, s: str) -> int:
+            self.write_called = True
+            raise BrokenPipeError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_tree(tmp, {"alpha.txt": "hello\n"})
+        args = build_parser().parse_args([tmp, "hello", "-c", "-p"])
+        writer = BrokenWriter()
+        assert run_print_mode(args, stdout=writer, stderr=io.StringIO()) == 0
+        assert writer.write_called is True
+
+
+def test_format_print_line() -> None:
     name_hit = SearchResult(1, "name", "/r/a/b.txt", "b.txt", "a/b.txt")
     content_hit = SearchResult(2, "content", "/r/a/b.txt", "b.txt", "a/b.txt", 7, "hi")
-    assert format_print_line(name_hit, ".") == "a/b.txt"
-    assert format_print_line(content_hit, "/r") == "/r/a/b.txt:7:hi"
+    assert format_print_line(name_hit, ".") == os.path.normpath("a/b.txt")
+    assert format_print_line(content_hit, "/r") == f"{os.path.normpath('/r/a/b.txt')}:7:hi"
 
 
 def test_cli_parser_defaults() -> None:
@@ -592,6 +796,7 @@ def test_cli_parser_defaults() -> None:
     assert args.query == ""
     assert not args.content and not args.regex
     assert not args.no_name and not args.print_only
+    assert not args.files_with_matches and not args.null
 
 
 # -----------------------------------------------------------------------------
@@ -847,6 +1052,59 @@ def test_app_help_modal_opens_and_closes() -> None:
                 await pilot.press("escape")
                 await pilot.pause()
                 assert not isinstance(app.screen, HelpModal)
+
+                app.action_show_help()
+                await pilot.pause()
+                assert isinstance(app.screen, HelpModal)
+                await pilot.press("q")
+                await pilot.pause()
+                assert not isinstance(app.screen, HelpModal)
+
+    asyncio.run(scenario())
+
+
+def test_app_down_arrow_focuses_results_and_sort_keeps_selection() -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_tree(
+                tmp,
+                {
+                    "zeta.txt": "hit\n",
+                    "alpha.txt": "hit\n",
+                    "middle.txt": "hit\n",
+                },
+            )
+            app = FindFileApp(initial_folder=tmp)
+            async with app.run_test(size=(160, 50)) as pilot:
+                await pilot.pause()
+                await _run_ui_search(app, pilot, "hit", content=True)
+
+                search_input = app.query_one("#input_query", Input)
+                search_input.focus()
+                await pilot.pause()
+                await pilot.press("down")
+                await pilot.pause()
+
+                table = app.query_one("#results_table", DataTable)
+                assert app.focused is table
+
+                table.move_cursor(row=1)
+                await pilot.pause()
+                chosen = app.get_selected_result()
+                assert chosen is not None
+
+                app.on_header_selected(_fake_header("name"))
+                await pilot.pause()
+                after_sort = app.get_selected_result()
+                assert after_sort is not None
+                assert after_sort.idx == chosen.idx
+
+                app.push_screen(FilePreviewModal(after_sort, query="hit"))
+                await pilot.pause()
+                assert isinstance(app.screen, FilePreviewModal)
+                await pilot.press("q")
+                await pilot.pause()
+                assert not isinstance(app.screen, FilePreviewModal)
 
     asyncio.run(scenario())
 
