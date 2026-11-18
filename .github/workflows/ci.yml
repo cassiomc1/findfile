@@ -43,5 +43,8 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: Validate macOS build script syntax
+        run: bash -n build_app.sh
+
       - name: Test
         run: python -m pytest

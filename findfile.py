@@ -47,7 +47,7 @@ from textual.widgets import (
     Static,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -112,6 +112,7 @@ PREVIEW_LINES_AFTER = 45
 PREVIEW_MAX_LINE_CHARS = 2000
 CLIPBOARD_TIMEOUT = 5
 GLOB_CHARS = "*?["
+_GLOB_RE = re.compile(r"\*|\?|\[[^\]]+\]")
 
 # Table sort helpers, shared by the header handler and the status pill.
 SORT_KEY_FUNCS: dict[str, Callable[["SearchResult"], object]] = {
@@ -189,22 +190,54 @@ def format_mtime(timestamp: float) -> str:
         return "-"
 
 
+def _has_null_byte(filepath: str) -> bool:
+    """Return True when the file head contains a NUL byte or cannot be read."""
+    try:
+        with open(filepath, "rb") as handle:
+            return b"\x00" in handle.read(BINARY_SNIFF_BYTES)
+    except OSError:
+        return True
+
+
 def is_binary_file(filepath: str) -> bool:
     """Return True when the file looks binary."""
     ext = os.path.splitext(filepath)[1].lower()
     if ext in BINARY_EXTENSIONS:
         return True
+    return _has_null_byte(filepath)
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """Return True when ``path`` is an accessible directory."""
     try:
-        with open(filepath, "rb") as handle:
-            if b"\x00" in handle.read(BINARY_SNIFF_BYTES):
-                return True
+        return path.is_dir()
     except OSError:
-        return True
-    return False
+        return False
+
+
+def _resolve_dir(raw: str) -> Optional[Path]:
+    """Expand and resolve ``raw`` if it points to an accessible directory."""
+    try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_dir():
+            return None
+        return candidate.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def file_extension(filename: str) -> str:
+    """Return the lowercase extension without a leading dot ('.env' -> 'env')."""
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    if ext:
+        return ext
+    if filename.startswith(".") and len(filename) > 1 and "." not in filename[1:]:
+        return filename[1:].lower()
+    return ""
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Copy text to the system clipboard (pbcopy, wl-copy, xclip, or xsel)."""
+    """Copy text to the system clipboard (pbcopy, wl-copy, xclip, xsel, or clip)."""
     if sys.platform == "darwin":
         commands = [["pbcopy"]]
     elif sys.platform.startswith("linux"):
@@ -213,6 +246,8 @@ def copy_to_clipboard(text: str) -> bool:
             ["xclip", "-selection", "clipboard"],
             ["xsel", "--clipboard", "--input"],
         ]
+    elif sys.platform == "win32":
+        commands = [["clip"]]
     else:
         return False
 
@@ -249,6 +284,11 @@ def open_file_in_system(filepath: str) -> bool:
                 stderr=subprocess.DEVNULL,
             )
             return True
+        if sys.platform == "win32":
+            startfile = getattr(os, "startfile", None)
+            if startfile is not None:
+                startfile(filepath)
+                return True
     except OSError:
         pass
     return False
@@ -271,6 +311,13 @@ def reveal_in_file_manager(filepath: str) -> bool:
                 stderr=subprocess.DEVNULL,
             )
             return True
+        if sys.platform == "win32":
+            subprocess.Popen(
+                ["explorer", f"/select,{os.path.normpath(filepath)}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
     except OSError:
         pass
     return False
@@ -278,7 +325,7 @@ def reveal_in_file_manager(filepath: str) -> bool:
 
 def has_glob(query: str) -> bool:
     """Return True when a plain (non-regex) query uses shell wildcards."""
-    return any(character in query for character in GLOB_CHARS)
+    return bool(_GLOB_RE.search(query))
 
 
 def build_highlight_pattern(
@@ -355,31 +402,109 @@ def parse_extensions(raw: str) -> Optional[Set[str]]:
     return extensions or None
 
 
-def read_line_window(path: str, first_line: int, last_line: int) -> Tuple[str, int]:
+def _find_match_span(
+    text: str,
+    query: str = "",
+    case_sensitive: bool = False,
+    regex_pattern: Optional[Pattern[str]] = None,
+) -> Optional[Tuple[int, int]]:
+    """Locate the first match span in ``text``, or None when absent."""
+    if regex_pattern is not None:
+        match = regex_pattern.search(text)
+        return match.span() if match else None
+    if not query:
+        return None
+    if case_sensitive:
+        pos = text.find(query)
+        return (pos, pos + len(query)) if pos >= 0 else None
+    lowered = query.lower()
+    pos = text.lower().find(lowered)
+    return (pos, pos + len(lowered)) if pos >= 0 else None
+
+
+def read_line_window(
+    path: str,
+    first_line: int,
+    last_line: int,
+    focus_line: Optional[int] = None,
+    query: str = "",
+    case_sensitive: bool = False,
+    use_regex: bool = False,
+) -> Tuple[str, int]:
     """Read lines ``first_line..last_line`` (1-based, inclusive) of a text file.
 
     Only the requested window is decoded, so previewing a multi-gigabyte log
     costs a streaming skip instead of loading the whole file. Very long lines
-    are clipped. Returns the text and the first line number actually read.
+    are clipped (centered around the match on ``focus_line`` when possible).
+    Returns the text and the first line number actually read.
     """
     first_line = max(1, first_line)
     last_line = max(first_line, last_line)
+    regex_pattern = (
+        build_highlight_pattern(query, case_sensitive=case_sensitive, use_regex=True)
+        if use_regex and query
+        else None
+    )
     lines: List[str] = []
-    with open(path, "r", encoding="utf-8", errors="replace", newline=None) as handle:
+    with open(path, "r", encoding="utf-8", errors="replace", newline="\n") as handle:
         window = itertools.islice(handle, first_line - 1, last_line)
-        for line in window:
-            if len(line) > PREVIEW_MAX_LINE_CHARS:
-                line = line[:PREVIEW_MAX_LINE_CHARS] + " …\n"
-            lines.append(line)
+        for line_no, raw_line in enumerate(window, start=first_line):
+            has_newline = raw_line.endswith("\n")
+            body = raw_line.rstrip("\n").rstrip("\r").replace("\r", "")
+            if len(body) > PREVIEW_MAX_LINE_CHARS:
+                span = (
+                    _find_match_span(
+                        body,
+                        "" if use_regex else query,
+                        case_sensitive,
+                        regex_pattern,
+                    )
+                    if line_no == focus_line and query
+                    else None
+                )
+                if span is not None and span[1] > PREVIEW_MAX_LINE_CHARS:
+                    center = (span[0] + span[1]) // 2
+                    start = max(0, center - PREVIEW_MAX_LINE_CHARS // 2)
+                    if start > span[0]:
+                        start = span[0]
+                    end = min(len(body), start + PREVIEW_MAX_LINE_CHARS)
+                    if end == len(body):
+                        start = max(0, end - PREVIEW_MAX_LINE_CHARS)
+                    prefix = "… " if start > 0 else ""
+                    suffix = " …" if end < len(body) else ""
+                    body = f"{prefix}{body[start:end]}{suffix}"
+                else:
+                    body = body[:PREVIEW_MAX_LINE_CHARS] + " …"
+            lines.append(body + ("\n" if has_newline else ""))
     return "".join(lines), first_line
 
 
-def _snippet_from_text(text: str) -> str:
-    """Trim a matching line to something that fits in a table cell."""
-    snippet = text.strip()
-    if len(snippet) > SNIPPET_MAX_CHARS:
-        snippet = snippet[: SNIPPET_MAX_CHARS - 3] + "..."
-    return snippet
+def _snippet_from_text(
+    text: str,
+    query: str = "",
+    case_sensitive: bool = False,
+    regex_pattern: Optional[Pattern[str]] = None,
+) -> str:
+    """Trim a matching line to fit a table cell, centered on the match."""
+    snippet = text.replace("\r", "").strip()
+    if len(snippet) <= SNIPPET_MAX_CHARS:
+        return snippet
+
+    span = _find_match_span(snippet, query, case_sensitive, regex_pattern)
+    if span is None or span[1] <= SNIPPET_MAX_CHARS - 3:
+        return snippet[: SNIPPET_MAX_CHARS - 3] + "..."
+
+    body_len = SNIPPET_MAX_CHARS - 6
+    center = (span[0] + span[1]) // 2
+    start = max(0, center - body_len // 2)
+    if start > span[0]:
+        start = span[0]
+    if start == 0:
+        return snippet[: SNIPPET_MAX_CHARS - 3] + "..."
+    if start + body_len >= len(snippet):
+        tail_len = SNIPPET_MAX_CHARS - 3
+        return "..." + snippet[len(snippet) - tail_len :]
+    return "..." + snippet[start : start + body_len] + "..."
 
 
 # -----------------------------------------------------------------------------
@@ -406,6 +531,8 @@ class SearchEngine:
         ext_filter: Optional[Set[str]] = None,
         max_workers: Optional[int] = None,
         max_results: int = MAX_TOTAL_RESULTS,
+        max_matches_per_file: int = MAX_MATCHES_PER_FILE,
+        unique_files: bool = False,
         on_batch: Optional[Callable[[List[SearchResult]], None]] = None,
         on_progress: Optional[Callable[[int, int, float, bool], None]] = None,
     ):
@@ -425,6 +552,9 @@ class SearchEngine:
         else:
             self.ext_filter = None
         self.max_results = max(1, int(max_results))
+        self.unique_files = bool(unique_files)
+        effective_per_file = 1 if self.unique_files else max_matches_per_file
+        self.max_matches_per_file = max(1, int(effective_per_file))
 
         cpu_count = os.cpu_count() or 4
         requested = max_workers if max_workers is not None else min(MAX_THREADS, cpu_count * 4)
@@ -599,7 +729,7 @@ class SearchEngine:
     ) -> None:
         """Walk the tree with os.scandir and feed name hits and content work."""
         stack = [self.root_dir]
-        visited_dirs: Set[Tuple[int, int]] = set()
+        visited_dirs: Set[object] = set()
         has_wildcard = (not self.use_regex) and has_glob(self.query)
 
         while stack and not self.stop_event.is_set():
@@ -607,7 +737,11 @@ class SearchEngine:
 
             try:
                 stat_result = os.stat(current_dir)
-                dir_key = (stat_result.st_dev, stat_result.st_ino)
+                dir_key: object = (
+                    (stat_result.st_dev, stat_result.st_ino)
+                    if stat_result.st_ino
+                    else os.path.normcase(os.path.realpath(current_dir))
+                )
                 if dir_key in visited_dirs:
                     continue
                 visited_dirs.add(dir_key)
@@ -615,6 +749,7 @@ class SearchEngine:
                 self._count_error()
                 continue
 
+            subdirs: List[str] = []
             try:
                 with os.scandir(current_dir) as entries:
                     for entry in entries:
@@ -624,6 +759,7 @@ class SearchEngine:
                         try:
                             is_directory = entry.is_dir(follow_symlinks=False)
                         except OSError:
+                            self._count_error()
                             continue
 
                         if is_directory:
@@ -631,7 +767,7 @@ class SearchEngine:
                                 entry.name.startswith(".") or entry.name in IGNORED_DIRS
                             ):
                                 continue
-                            stack.append(entry.path)
+                            subdirs.append(entry.path)
                             continue
 
                         try:
@@ -639,12 +775,13 @@ class SearchEngine:
                             # not followed, which keeps cycles impossible.
                             is_file = entry.is_file(follow_symlinks=True)
                         except OSError:
+                            self._count_error()
                             continue
                         if not is_file:
                             continue
 
                         extension = os.path.splitext(entry.name)[1].lower()
-                        extension_plain = extension.lstrip(".")
+                        extension_plain = file_extension(entry.name)
                         if (
                             self.ext_filter is not None
                             and extension_plain not in self.ext_filter
@@ -654,11 +791,13 @@ class SearchEngine:
                         with self._counter_lock:
                             self._files_scanned += 1
 
+                        matched_name = False
                         if self.search_name and self._name_matches(entry.name, has_wildcard):
                             if not self._emit_name_match(entry, result_queue):
                                 return
+                            matched_name = True
 
-                        if self.search_content:
+                        if self.search_content and not (self.unique_files and matched_name):
                             explicitly_requested = (
                                 self.ext_filter is not None
                                 and extension_plain in self.ext_filter
@@ -669,6 +808,11 @@ class SearchEngine:
                                 return
             except (PermissionError, OSError):
                 self._count_error()
+                continue
+
+            if subdirs:
+                subdirs.sort(key=lambda path: os.path.basename(path).lower(), reverse=True)
+                stack.extend(subdirs)
 
     def _name_matches(self, name: str, has_wildcard: bool) -> bool:
         if self.use_regex:
@@ -809,7 +953,7 @@ class SearchEngine:
                 return
 
             matches_in_file += 1
-            if matches_in_file >= MAX_MATCHES_PER_FILE:
+            if matches_in_file >= self.max_matches_per_file:
                 return
 
     def _scan_text_lines(self, handle, file_path, stat_result, result_queue) -> None:
@@ -817,7 +961,7 @@ class SearchEngine:
             handle,
             encoding="utf-8",
             errors="replace",
-            newline=None,
+            newline="\n",
         )
         file_name = os.path.basename(file_path)
         relative = self._relative_path(file_path)
@@ -827,6 +971,9 @@ class SearchEngine:
             for line_number, line in enumerate(stream, start=1):
                 if self.stop_event.is_set():
                     return
+
+                if "\r" in line:
+                    line = line.replace("\r", "")
 
                 if self._regex_pattern is not None:
                     if not self._regex_pattern.search(line):
@@ -849,7 +996,7 @@ class SearchEngine:
                     return
 
                 matches_in_file += 1
-                if matches_in_file >= MAX_MATCHES_PER_FILE:
+                if matches_in_file >= self.max_matches_per_file:
                     return
         finally:
             # Detach so the outer ``with open`` owns the lifetime of the fd.
@@ -879,7 +1026,12 @@ class SearchEngine:
             file_name=file_name,
             rel_path=relative,
             line_number=line_number,
-            snippet=_snippet_from_text(line_text),
+            snippet=_snippet_from_text(
+                line_text,
+                query=self.query,
+                case_sensitive=self.case_sensitive,
+                regex_pattern=self._regex_pattern,
+            ),
             file_size=stat_result.st_size,
             mtime=stat_result.st_mtime,
         )
@@ -989,7 +1141,7 @@ class CustomFolderTree(DirectoryTree):
         return [
             path
             for path in paths
-            if path.is_dir() and not path.name.startswith(".")
+            if not path.name.startswith(".") and _safe_is_dir(path)
         ]
 
 
@@ -1000,8 +1152,8 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
 
     def __init__(self, initial_path: str = "."):
         super().__init__()
-        resolved = Path(initial_path).expanduser()
-        self.current_path = str(resolved if resolved.is_dir() else Path.cwd())
+        resolved = _resolve_dir(initial_path)
+        self.current_path = str(resolved if resolved is not None else Path.cwd())
 
     def compose(self) -> ComposeResult:
         with Vertical(id="folder_dialog", classes="dialog"):
@@ -1063,31 +1215,31 @@ class FolderPickerModal(ModalScreen[Optional[str]]):
         raw = event.value.strip()
         if not raw:
             return
-        resolved = Path(raw).expanduser()
-        if resolved.is_dir():
-            self.dismiss(str(resolved.resolve()))
+        resolved = _resolve_dir(raw)
+        if resolved is not None:
+            self.dismiss(str(resolved))
         else:
             self.notify(f"Not a folder: {escape(raw)}", severity="warning")
 
     @on(Button.Pressed, "#btn_modal_confirm")
     def action_confirm(self) -> None:
         raw = self.query_one("#modal_folder_input", Input).value.strip()
-        resolved = Path(raw).expanduser() if raw else Path(self.current_path)
-        if resolved.is_dir():
-            self.dismiss(str(resolved.resolve()))
+        resolved = _resolve_dir(raw) if raw else _resolve_dir(self.current_path)
+        if resolved is not None:
+            self.dismiss(str(resolved))
         else:
-            self.notify(f"Not a folder: {escape(raw)}", severity="warning")
+            self.notify(
+                f"Not a folder: {escape(raw or self.current_path)}",
+                severity="warning",
+            )
 
     @on(Button.Pressed, "#btn_modal_cancel")
     def action_cancel(self) -> None:
         self.dismiss(None)
 
     def _set_path(self, path: Path) -> None:
-        try:
-            resolved = path.expanduser().resolve()
-        except OSError:
-            return
-        if not resolved.is_dir():
+        resolved = _resolve_dir(str(path))
+        if resolved is None:
             return
 
         self.current_path = str(resolved)
@@ -1103,15 +1255,29 @@ class FilePreviewModal(ModalScreen[None]):
 
     BINDINGS = [
         Binding("escape", "dismiss_modal", "Close"),
+        Binding("q", "dismiss_modal", "Close", show=False),
         Binding("o", "open_sys", "Open"),
         Binding("f", "reveal_finder", "Finder"),
         Binding("c", "copy_path", "Copy path"),
         Binding("y", "copy_snippet", "Copy snippet"),
     ]
 
-    def __init__(self, result: SearchResult):
+    def __init__(
+        self,
+        result: SearchResult,
+        query: str = "",
+        case_sensitive: bool = False,
+        use_regex: bool = False,
+    ):
         super().__init__()
         self.result = result
+        self._search_query = query
+        self._case_sensitive = case_sensitive
+        self._use_regex = use_regex
+
+    def on_mount(self) -> None:
+        """Focus the scroll pane so arrow and page keys work immediately."""
+        self.query_one("#preview_scroll", VerticalScroll).focus()
 
     def compose(self) -> ComposeResult:
         safe_size = escape(format_size(self.result.file_size))
@@ -1145,10 +1311,19 @@ class FilePreviewModal(ModalScreen[None]):
     def _build_preview_widget(self) -> Static:
         """Load a syntax-highlighted window around the matching line."""
         path = Path(self.result.file_path)
-        if not path.is_file():
+        try:
+            is_regular = path.is_file()
+        except OSError:
+            is_regular = False
+        if not is_regular:
             return Static("[red]File not found or unreadable.[/]")
 
-        if is_binary_file(self.result.file_path):
+        binary = (
+            _has_null_byte(self.result.file_path)
+            if self.result.match_type == "content"
+            else is_binary_file(self.result.file_path)
+        )
+        if binary:
             return Static("[italic #ffb000]Binary file. Text preview is unavailable.[/]")
 
         try:
@@ -1159,7 +1334,15 @@ class FilePreviewModal(ModalScreen[None]):
             else:
                 first_line = 1
                 last_line = PREVIEW_LINES_BEFORE + PREVIEW_LINES_AFTER
-            code, start_line = read_line_window(str(path), first_line, last_line)
+            code, start_line = read_line_window(
+                str(path),
+                first_line,
+                last_line,
+                focus_line=line_number,
+                query=self._search_query,
+                case_sensitive=self._case_sensitive,
+                use_regex=self._use_regex,
+            )
             if not code:
                 return Static("[italic #1d7d2f]Empty file.[/]")
             syntax = Syntax(
@@ -1213,11 +1396,15 @@ class FilePreviewModal(ModalScreen[None]):
 class HelpModal(ModalScreen[None]):
     """Dialog listing keyboard shortcuts."""
 
-    BINDINGS = [Binding("escape", "dismiss", "Close")]
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("q", "dismiss", "Close", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         shortcuts = (
             ("Enter", "Start a search from any field"),
+            ("Down (in search)", "Jump to the results table"),
             ("Esc", "Stop the search, or close a dialog"),
             ("Enter / double-click", "Open the selected row"),
             ("Column header", "Sort the table by that column"),
@@ -1226,11 +1413,11 @@ class HelpModal(ModalScreen[None]):
             ("Ctrl+L", "Clear the results"),
             ("Ctrl+K", "Open the command palette"),
             ("o", "Open the file in the default app"),
-            ("f", "Reveal the file in Finder"),
+            ("f", "Reveal the file in the file manager"),
             ("c", "Copy the full path"),
             ("y", "Copy the matched snippet or file name"),
             ("F1  ?", "Show this help"),
-            ("q", "Quit"),
+            ("q", "Quit, or close a dialog"),
         )
         with Vertical(id="help_dialog", classes="dialog"):
             yield Label("Shortcuts", classes="dialog_title")
@@ -1626,7 +1813,8 @@ class FindFileApp(App):
         max_results: int = MAX_TOTAL_RESULTS,
     ):
         super().__init__()
-        self.initial_folder = str(Path(initial_folder).expanduser().resolve())
+        resolved_folder = _resolve_dir(initial_folder)
+        self.initial_folder = str(resolved_folder if resolved_folder is not None else Path.cwd())
         self.initial_query = initial_query
         self.initial_name = initial_name
         self.initial_content = initial_content
@@ -1637,7 +1825,8 @@ class FindFileApp(App):
 
         cpu_count = os.cpu_count() or 4
         default_workers = min(MAX_THREADS, cpu_count * 4)
-        self.worker_count = max(1, min(256, int(workers or default_workers)))
+        requested_workers = workers if workers is not None else default_workers
+        self.worker_count = max(1, min(256, int(requested_workers)))
         self.max_results = max(1, int(max_results))
 
         self.current_engine: Optional[SearchEngine] = None
@@ -1851,8 +2040,8 @@ class FindFileApp(App):
             self.notify("Turn on Name, Text, or both.", severity="warning")
             return
 
-        folder_path = Path(folder).expanduser().resolve()
-        if not folder_path.is_dir():
+        folder_path = _resolve_dir(folder)
+        if folder_path is None:
             self.notify(f"Folder not found: {escape(folder)}", severity="error")
             self.query_one("#input_folder", Input).focus()
             return
@@ -2170,6 +2359,11 @@ class FindFileApp(App):
             return
 
         table = self.query_one("#results_table", DataTable)
+        selected_idx: Optional[int] = None
+        if restore_cursor:
+            selected = self.get_selected_result()
+            if selected is not None:
+                selected_idx = selected.idx
         try:
             current_row = table.cursor_row if table.row_count else 0
         except Exception:  # noqa: BLE001 - cursor may be unavailable
@@ -2185,7 +2379,13 @@ class FindFileApp(App):
             self._add_result_row(table, result)
 
         if restore_cursor and ordered:
-            table.move_cursor(row=min(current_row, len(ordered) - 1))
+            target_row = min(current_row, len(ordered) - 1)
+            if selected_idx is not None:
+                for row_index, item in enumerate(ordered):
+                    if item.idx == selected_idx:
+                        target_row = row_index
+                        break
+            table.move_cursor(row=target_row)
 
     def _update_sort_pill(self) -> None:
         pill = self.query_one("#pill_sort", Label)
@@ -2205,7 +2405,14 @@ class FindFileApp(App):
             row_key_value = int(str(event.row_key.value))
             result = self.results_map.get(row_key_value)
             if result:
-                self.push_screen(FilePreviewModal(result))
+                self.push_screen(
+                    FilePreviewModal(
+                        result,
+                        query=self._last_query,
+                        case_sensitive=self._last_case_sensitive,
+                        use_regex=self._last_use_regex,
+                    )
+                )
         except (ValueError, TypeError):
             pass
 
@@ -2222,10 +2429,15 @@ class FindFileApp(App):
             return None
 
     def on_key(self, event) -> None:
-        """Handle single-key shortcuts when no dialog or text field is active."""
+        """Handle keyboard navigation and single-key shortcuts."""
         if isinstance(self.screen, ModalScreen):
             return
         if isinstance(self.focused, Input):
+            if event.key == "down" and self.focused.id == "input_query":
+                table = self.query_one("#results_table", DataTable)
+                if table.row_count > 0:
+                    event.stop()
+                    table.focus()
             return
 
         character = event.character
@@ -2332,7 +2544,8 @@ Examples:
   findfile.py . "def main" -c           # Search file contents for 'def main'
   findfile.py . "def\\s+test_" -c -r    # Search file contents with a regex
   findfile.py . "api_key" -c -e py,js   # Only .py and .js files
-  findfile.py . "TODO" --no-name -p      # Print content matches, no UI
+  findfile.py . "TODO" --no-name -p     # Print content matches, no UI
+  findfile.py . "TODO" -c -l -0         # NUL-separated matching file paths
         """,
     )
     parser.add_argument(
@@ -2365,6 +2578,18 @@ Examples:
         action="store_true",
         help="Print matches to stdout and exit, without the UI "
         "(exit status 0 on a match, 1 on none)",
+    )
+    parser.add_argument(
+        "-l",
+        "--files-with-matches",
+        action="store_true",
+        help="Print each matching file path once and exit (implies --print)",
+    )
+    parser.add_argument(
+        "-0",
+        "--null",
+        action="store_true",
+        help="Separate printed entries with a NUL byte instead of a newline",
     )
     parser.add_argument(
         "-r",
@@ -2433,6 +2658,8 @@ def run_print_mode(
     """
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    files_only = bool(getattr(args, "files_with_matches", False))
+    terminator = "\0" if getattr(args, "null", False) else "\n"
     collected: List[SearchResult] = []
     engine = SearchEngine(
         root_dir=args.folder,
@@ -2445,6 +2672,7 @@ def run_print_mode(
         ext_filter=parse_extensions(args.ext),
         max_workers=args.workers,
         max_results=args.max_results,
+        unique_files=files_only,
         on_batch=collected.extend,
     )
 
@@ -2461,9 +2689,18 @@ def run_print_mode(
             result.line_number or 0,
         )
     )
-    for result in collected:
-        stdout.write(format_print_line(result, args.folder) + "\n")
-    stdout.flush()
+    display_root = os.path.expanduser(args.folder)
+    try:
+        for result in collected:
+            line = (
+                os.path.normpath(os.path.join(display_root, result.rel_path))
+                if files_only
+                else format_print_line(result, display_root)
+            )
+            stdout.write(line + terminator)
+        stdout.flush()
+    except BrokenPipeError:
+        return 0
 
     if engine.limit_reached:
         stderr.write(
@@ -2478,8 +2715,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    folder = Path(args.folder).expanduser()
-    if not folder.is_dir():
+    folder = _resolve_dir(args.folder)
+    if folder is None:
         parser.error(f"folder not found: {args.folder}")
 
     if args.workers is not None and not 1 <= args.workers <= 256:
@@ -2490,13 +2727,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.regex and args.query:
         try:
-            re.compile(args.query)
+            flags = 0 if args.case_sensitive else re.IGNORECASE
+            re.compile(args.query, flags=flags)
         except re.error as exc:
             parser.error(f"invalid regular expression: {exc}")
 
-    if args.print_only:
+    print_mode = args.print_only or args.files_with_matches
+    if args.null and not print_mode:
+        parser.error("--null requires --print or --files-with-matches")
+
+    if print_mode:
         if not args.query:
-            parser.error("--print needs a search term")
+            flag = "--files-with-matches" if args.files_with_matches else "--print"
+            parser.error(f"{flag} needs a search term")
         return run_print_mode(args)
 
     app = FindFileApp(
