@@ -2000,7 +2000,6 @@ class FindFileApp(App):
                     classes="btn_compact",
                 )
                 yield Button("Clear", id="btn_clear", classes="btn_compact")
-                yield Button("Apps", id="btn_apps", classes="btn_compact")
 
             with Horizontal(classes="form_row"):
                 yield Label("Folder", classes="row_label")
@@ -2019,6 +2018,7 @@ class FindFileApp(App):
                 yield Checkbox("Case", value=self.initial_case, id="chk_case")
                 yield Checkbox("Regex", value=self.initial_regex, id="chk_regex")
                 yield Checkbox("Skip hidden", value=self.initial_ignore, id="chk_ignore")
+                yield Button("Apps", id="btn_apps", classes="btn_compact")
 
             with Horizontal(classes="form_row"):
                 yield Label("Ext.", classes="row_label")
