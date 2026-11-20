@@ -488,7 +488,7 @@ def highlight_match(
             continue
         if start > last_index:
             rich_text.append(text[last_index:start])
-        rich_text.append(text[start:end], style="bold black on #33ff33")
+        rich_text.append(text[start:end], style="bold #000000 on #ffb000")
         last_index = end
 
     if last_index < len(text):
@@ -2119,28 +2119,35 @@ class FindFileApp(App):
 
     @on(Button.Pressed, "#btn_apps")
     def toggle_apps_scope(self) -> None:
-        """Toggle searching only the folders where apps and CLI tools live."""
+        """Toggle the Apps scope and search right away.
+
+        With the scope on, the search covers the folders where apps and CLI
+        tools live instead of the Folder field. Clicking the button runs the
+        search, or asks for a term when the query is empty.
+        """
         self.app_scope = not self.app_scope
         button = self.query_one("#btn_apps", Button)
         button.variant = "primary" if self.app_scope else "default"
+        button.label = "Apps ✓" if self.app_scope else "Apps"
+
+        if self.app_scope and not app_search_dirs():
+            self.app_scope = False
+            button.variant = "default"
+            button.label = "Apps"
+            self.notify("No app folders found on this system.", severity="warning")
+            return
+
+        if self.query_one("#input_query", Input).value.strip():
+            self.start_search()
+            return
 
         if self.app_scope:
-            locations = app_search_dirs()
-            if not locations:
-                self.app_scope = False
-                button.variant = "default"
-                self.notify("No app folders found on this system.", severity="warning")
-                return
-            self.notify(
-                f"Apps scope: {len(locations)} locations "
-                f"({', '.join(locations[:3])}{', …' if len(locations) > 3 else ''})"
+            self.query_one("#lbl_status", Label).update(
+                f"Apps scope · {len(app_search_dirs())} locations · type a term and press Enter"
             )
-            if not self.is_searching:
-                self.query_one("#lbl_status", Label).update(
-                    f"Apps scope · {len(locations)} locations"
-                )
-        elif not self.is_searching:
+        else:
             self.query_one("#lbl_status", Label).update("Ready.")
+        self.query_one("#input_query", Input).focus()
 
     @on(Button.Pressed, "#btn_search")
     @on(Input.Submitted, "#input_query")
