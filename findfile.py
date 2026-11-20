@@ -47,7 +47,7 @@ from textual.widgets import (
     Static,
 )
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -224,6 +224,114 @@ def _resolve_dir(raw: str) -> Optional[Path]:
         return candidate.resolve()
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def app_search_dirs() -> List[str]:
+    """Return every existing folder where GUI apps and CLI tools live.
+
+    The list covers the standard install locations of each supported OS:
+    application bundles on macOS, Program Files and per-user installs on
+    Windows, and the usual ``bin`` directories plus package-manager export
+    folders on Linux.
+    """
+    home = Path.home()
+    candidates: List[str] = []
+
+    if sys.platform == "darwin":
+        candidates = [
+            "/Applications",
+            "/System/Applications",
+            str(home / "Applications"),
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/local/libexec",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/opt/local/bin",
+            "/opt/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "/sbin",
+            "/usr/sbin",
+            "/usr/libexec",
+            str(home / ".local" / "bin"),
+            str(home / "bin"),
+            str(home / ".cargo" / "bin"),
+            str(home / "go" / "bin"),
+        ]
+    elif sys.platform == "win32":
+        env = os.environ
+        system_root = env.get("SystemRoot", r"C:\Windows")
+        program_files = [
+            env.get("ProgramFiles", r"C:\Program Files"),
+            env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            env.get("ProgramW6432"),
+        ]
+        candidates = [
+            *[path for path in program_files if path],
+            str(Path(env.get("LOCALAPPDATA", str(home / "AppData" / "Local"))) / "Programs"),
+            str(
+                Path(env.get("APPDATA", str(home / "AppData" / "Roaming")))
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+            ),
+            str(
+                Path(env.get("ProgramData", r"C:\ProgramData"))
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+            ),
+            str(Path(system_root) / "System32"),
+            str(Path(system_root) / "SysWOW64"),
+            str(Path(env.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps")
+            if env.get("LOCALAPPDATA")
+            else "",
+            str(home / ".cargo" / "bin"),
+            str(home / "scoop" / "shims"),
+            str(Path(env.get("ProgramData", r"C:\ProgramData")) / "chocolatey" / "bin"),
+            str(home / ".local" / "bin"),
+        ]
+    elif sys.platform.startswith("linux"):
+        candidates = [
+            "/usr/bin",
+            "/usr/local/bin",
+            "/bin",
+            "/sbin",
+            "/usr/sbin",
+            "/usr/local/sbin",
+            "/usr/games",
+            "/usr/local/games",
+            "/opt",
+            "/snap/bin",
+            "/var/lib/flatpak/exports/bin",
+            "/var/lib/snapd/snap/bin",
+            "/run/current-system/sw/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/etc/profiles/per-user",
+            str(home / ".local" / "bin"),
+            str(home / "bin"),
+            str(home / ".cargo" / "bin"),
+            str(home / "go" / "bin"),
+            str(home / ".npm-global" / "bin"),
+            str(home / ".local" / "share" / "mise" / "shims"),
+            str(home / ".asdf" / "shims"),
+            str(home / ".nix-profile" / "bin"),
+        ]
+
+    resolved: List[str] = []
+    seen: Set[str] = set()
+    for raw in candidates:
+        if not raw:
+            continue
+        directory = _resolve_dir(raw)
+        if directory is None or str(directory) in seen:
+            continue
+        seen.add(str(directory))
+        resolved.append(str(directory))
+    return resolved
 
 
 def file_extension(filename: str) -> str:
@@ -533,10 +641,23 @@ class SearchEngine:
         max_results: int = MAX_TOTAL_RESULTS,
         max_matches_per_file: int = MAX_MATCHES_PER_FILE,
         unique_files: bool = False,
+        extra_roots: Optional[Iterable[str]] = None,
         on_batch: Optional[Callable[[List[SearchResult]], None]] = None,
         on_progress: Optional[Callable[[int, int, float, bool], None]] = None,
     ):
         self.root_dir = os.path.abspath(os.path.expanduser(root_dir))
+        self.root_dirs = [self.root_dir]
+        if extra_roots:
+            seen = {self.root_dir}
+            for raw in extra_roots:
+                try:
+                    candidate = os.path.abspath(os.path.expanduser(str(raw)))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if candidate in seen or not os.path.isdir(candidate):
+                    continue
+                seen.add(candidate)
+                self.root_dirs.append(candidate)
         self.query = query
         self.search_name = search_name
         self.search_content = search_content
@@ -614,7 +735,9 @@ class SearchEngine:
         """Run the search. Returns (files scanned, matches, elapsed seconds)."""
         start_time = time.perf_counter()
 
-        if not self.query or not os.path.isdir(self.root_dir):
+        if not self.query or not any(
+            os.path.isdir(root) for root in self.root_dirs
+        ):
             return 0, 0, 0.0
 
         with self._counter_lock:
@@ -728,7 +851,7 @@ class SearchEngine:
         result_queue: "queue.Queue[SearchResult]",
     ) -> None:
         """Walk the tree with os.scandir and feed name hits and content work."""
-        stack = [self.root_dir]
+        stack = list(self.root_dirs)
         visited_dirs: Set[object] = set()
         has_wildcard = (not self.use_regex) and has_glob(self.query)
 
@@ -866,10 +989,18 @@ class SearchEngine:
         return False
 
     def _relative_path(self, path: str) -> str:
-        try:
-            return os.path.relpath(path, self.root_dir)
-        except ValueError:
-            return path
+        """Return ``path`` relative to the root that contains it."""
+        best: Optional[str] = None
+        for root in self.root_dirs:
+            try:
+                relative = os.path.relpath(path, root)
+            except ValueError:
+                continue
+            if relative == ".." or relative.startswith(".." + os.sep):
+                continue
+            if best is None or len(relative) < len(best):
+                best = relative
+        return best if best is not None else path
 
     # -- content scanning ----------------------------------------------------
 
@@ -1845,6 +1976,7 @@ class FindFileApp(App):
 
         self._sort_key: Optional[str] = None
         self._sort_reverse: dict[str, bool] = {}
+        self.app_scope = False
 
     # -- layout --------------------------------------------------------------
 
@@ -1868,6 +2000,7 @@ class FindFileApp(App):
                     classes="btn_compact",
                 )
                 yield Button("Clear", id="btn_clear", classes="btn_compact")
+                yield Button("Apps", id="btn_apps", classes="btn_compact")
 
             with Horizontal(classes="form_row"):
                 yield Label("Folder", classes="row_label")
@@ -1984,6 +2117,31 @@ class FindFileApp(App):
     def set_current_dir(self) -> None:
         self.query_one("#input_folder", Input).value = str(Path.cwd())
 
+    @on(Button.Pressed, "#btn_apps")
+    def toggle_apps_scope(self) -> None:
+        """Toggle searching only the folders where apps and CLI tools live."""
+        self.app_scope = not self.app_scope
+        button = self.query_one("#btn_apps", Button)
+        button.variant = "primary" if self.app_scope else "default"
+
+        if self.app_scope:
+            locations = app_search_dirs()
+            if not locations:
+                self.app_scope = False
+                button.variant = "default"
+                self.notify("No app folders found on this system.", severity="warning")
+                return
+            self.notify(
+                f"Apps scope: {len(locations)} locations "
+                f"({', '.join(locations[:3])}{', …' if len(locations) > 3 else ''})"
+            )
+            if not self.is_searching:
+                self.query_one("#lbl_status", Label).update(
+                    f"Apps scope · {len(locations)} locations"
+                )
+        elif not self.is_searching:
+            self.query_one("#lbl_status", Label).update("Ready.")
+
     @on(Button.Pressed, "#btn_search")
     @on(Input.Submitted, "#input_query")
     @on(Input.Submitted, "#input_folder")
@@ -2024,7 +2182,6 @@ class FindFileApp(App):
 
     def start_search(self) -> None:
         query = self.query_one("#input_query", Input).value.strip()
-        folder = self.query_one("#input_folder", Input).value.strip() or "."
         search_name = self.query_one("#chk_name", Checkbox).value
         search_content = self.query_one("#chk_content", Checkbox).value
         case_sensitive = self.query_one("#chk_case", Checkbox).value
@@ -2040,11 +2197,22 @@ class FindFileApp(App):
             self.notify("Turn on Name, Text, or both.", severity="warning")
             return
 
-        folder_path = _resolve_dir(folder)
-        if folder_path is None:
-            self.notify(f"Folder not found: {escape(folder)}", severity="error")
-            self.query_one("#input_folder", Input).focus()
-            return
+        if self.app_scope:
+            root_dirs = app_search_dirs()
+            if not root_dirs:
+                self.notify("No app folders found on this system.", severity="warning")
+                return
+            root_dir = root_dirs[0]
+            extra_roots = root_dirs[1:]
+        else:
+            folder = self.query_one("#input_folder", Input).value.strip() or "."
+            folder_path = _resolve_dir(folder)
+            if folder_path is None:
+                self.notify(f"Folder not found: {escape(folder)}", severity="error")
+                self.query_one("#input_folder", Input).focus()
+                return
+            root_dir = str(folder_path)
+            extra_roots = None
 
         if use_regex:
             try:
@@ -2083,7 +2251,9 @@ class FindFileApp(App):
         self.query_one("#pill_threads", Label).update(
             f"{self.worker_count} threads" if search_content else "name only"
         )
-        self.query_one("#lbl_status", Label).update("Searching…")
+        self.query_one("#lbl_status", Label).update(
+            "Searching apps…" if self.app_scope else "Searching…"
+        )
         self.query_one("#progress_bar", ProgressBar).styles.display = "block"
         self._update_counters(0, 0, 0.0)
         self._show_empty("Scanning the folder…")
@@ -2113,7 +2283,8 @@ class FindFileApp(App):
 
         try:
             engine = SearchEngine(
-                root_dir=str(folder_path),
+                root_dir=root_dir,
+                extra_roots=extra_roots,
                 query=query,
                 search_name=search_name,
                 search_content=search_content,

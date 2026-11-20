@@ -38,6 +38,9 @@ Python 3 with Textual and Rich, and scanned with a thread pool.
   - Result cap (default 5,000) so the table cannot grow without bound.
   - Empty state before searching and explicit messages for no matches,
     cancelled searches, unreadable files, and the result cap.
+  - **Apps scope**: the `Apps` button restricts the search to the folders
+    where GUI apps and CLI tools live (`/Applications`, `Program Files`,
+    `~/.local/bin`, package-manager bin dirs, and similar, per platform).
 - **Print mode** (`-p` / `-l`)
   - `-p` runs one search without the UI and prints grep-style lines
     (`path` for name hits, `path:line:snippet` for content hits), sorted.
